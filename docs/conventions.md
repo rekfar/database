@@ -107,10 +107,18 @@ reader expects them rather than as `a` and `o`.
 **On Azure SQL this is fixed when the database is created and cannot be changed
 afterwards.** Getting it wrong means exporting and reimporting into a new database.
 
-Name columns that exist for *searching* are declared `COLLATE Norwegian_100_CI_AI`
+Name columns that exist for *searching* are declared `COLLATE Latin1_General_100_CI_AI`
 (accent-insensitive), so typing `Galdhopiggen` finds `Galdhøpiggen`. One column cannot
 both sort correctly and match insensitively, which is why `ref.Peak` has `Name` for display
 and `SearchName` for lookup. The duplication is 200 characters per peak and it is worth it.
+
+The search collation is deliberately *not* Norwegian. The same property that makes
+`Norwegian_100_CI_AS` right for sorting makes it useless for matching: Norwegian treats
+`æ`, `ø` and `å` as distinct letters rather than accented vowels, so an accent-insensitive
+Norwegian collation has no diacritic to strip and `Galdhopiggen` still fails to find
+`Galdhøpiggen`. A Western European collation folds them, which is the whole point of the
+column. Sorting is unaffected — that is `Name`'s job. `tests/smoke.sql` asserts both
+halves, so swapping the collation back breaks the build.
 
 ## Constraints
 

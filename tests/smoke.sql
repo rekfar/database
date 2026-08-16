@@ -80,8 +80,8 @@ BEGIN TRY
 
     SELECT @count = COUNT(*)
     FROM sys.columns
-    WHERE object_id = OBJECT_ID('[ref].Peak') AND name = 'SearchName' AND collation_name = 'Norwegian_100_CI_AI';
-    IF @count <> 1 THROW 50006, '[ref].Peak.SearchName must be accent-insensitive.', 1;
+    WHERE object_id = OBJECT_ID('[ref].Peak') AND name = 'SearchName' AND collation_name = 'Latin1_General_100_CI_AI';
+    IF @count <> 1 THROW 50006, '[ref].Peak.SearchName must be accent-insensitive — and not a Norwegian collation, which does not fold ø.', 1;
 
     /* ---------- fixtures ---------- */
 

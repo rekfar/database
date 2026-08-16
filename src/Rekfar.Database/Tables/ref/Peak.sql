@@ -20,7 +20,14 @@ CREATE TABLE [ref].Peak
     -- finds Galdhøpiggen (FR-PEAK-1). [Name] keeps the database collation so that
     -- sorting still puts æ, ø and å where Norwegian expects them; a single column
     -- cannot do both. Populated by ingestion as a straight copy of [Name].
-    SearchName                  nvarchar(200)   COLLATE Norwegian_100_CI_AI NOT NULL,
+    --
+    -- Deliberately NOT a Norwegian collation. Norwegian treats æ, ø and å as distinct
+    -- letters sorting after z, not as accented vowels, so Norwegian_100_CI_AI has no
+    -- diacritic to strip and leaves "Galdhopiggen" not matching Galdhøpiggen — the
+    -- exact thing this column exists to do. A Western European collation does treat
+    -- them as accented forms, which is what makes the fold work. Sorting is unaffected:
+    -- that is [Name]'s job, and it keeps the database collation.
+    SearchName                  nvarchar(200)   COLLATE Latin1_General_100_CI_AI NOT NULL,
     NavneobjektType             nvarchar(60)    NOT NULL,
     [Location]                  geography       NOT NULL,
     ElevationMeters             int             NULL,

@@ -19,8 +19,5 @@
     <BlockOnPossibleDataLoss>True</BlockOnPossibleDataLoss>
     <DropObjectsNotInSource>False</DropObjectsNotInSource>
     <VerifyDeployment>True</VerifyDeployment>
-    <SqlCommandVariableValues>
-      <SqlCommandVariableValue Name="QuotedIdentifier">True</SqlCommandVariableValue>
-    </SqlCommandVariableValue>
   </PropertyGroup>
 </Project>

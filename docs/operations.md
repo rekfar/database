@@ -5,15 +5,38 @@ account deletion, reference-data rebuild.
 
 ## Creating the Azure SQL database
 
-One-time. The order matters, and one step is irreversible.
+One-time, and already done — what follows is the record of how, and what to repeat if the
+database ever has to be rebuilt. The order matters, and one step is irreversible.
 
-1. Create the database on the **Azure SQL Database free offer** — General Purpose,
-   serverless, in an **EEA region** (NFR-PRIV-5). The free grant is 100,000 vCore-seconds
-   and 32 GB of data per database per month, renewing monthly for the lifetime of the
-   subscription rather than expiring after a year
+What exists: resource group `rekfar` and logical server `rekfar.database.windows.net`, both
+in **Sweden Central**, holding the database `Rekfar`.
+
+1. Create the resource group and the logical server in an **EEA region** (NFR-PRIV-5).
+   Authentication is **Entra-only**, so the server has no SQL admin password to store or
+   rotate; the `--external-admin-*` arguments name the human administrator.
+
+   ```bash
+   az group create --name rekfar --location swedencentral
+   ```
+
+   ```bash
+   az sql server create --name rekfar --resource-group rekfar --location swedencentral --enable-ad-only-auth --external-admin-principal-type User --external-admin-name "<upn>" --external-admin-sid "<object-id>" --minimal-tls-version 1.2
+   ```
+
+   **On the region.** Sweden Central rather than Norway East, which would otherwise be the
+   obvious choice: Norway East returns `RegionDoesNotAllowProvisioning` for new SQL servers
+   on this subscription, and lifting that needs a support request. Note the trap if a region
+   ever has to be changed — a *failed* create still pins the server name to that region in
+   ARM, so a later attempt elsewhere fails with `InvalidResourceLocation` even though no
+   server exists. Deleting and recreating the (empty) resource group clears it.
+
+2. Create the database on the **Azure SQL Database free offer** — General Purpose,
+   serverless. The free grant is 100,000 vCore-seconds and 32 GB of data per database per
+   month, renewing monthly for the lifetime of the subscription rather than expiring after a
+   year
    ([ADR-0010](https://github.com/rekfar/docs/blob/main/adr/0010-tech-stack-dotnet-azure-sql.md)).
 
-2. **Set the collation to `Norwegian_100_CI_AS` at creation.** Azure SQL cannot change a
+   **Set the collation to `Norwegian_100_CI_AS` at creation.** Azure SQL cannot change a
    database's collation afterwards — fixing a mistake here means creating a new database and
    migrating the data into it. The portal's default is
    `SQL_Latin1_General_CP1_CI_AS`; it must be changed on the *Additional settings* tab
@@ -21,16 +44,24 @@ One-time. The order matters, and one step is irreversible.
    mismatch, but only after the fact.
 
    ```bash
-   az sql db create --resource-group rekfar --server rekfar --name Rekfar --collation Norwegian_100_CI_AS --edition GeneralPurpose --compute-model Serverless --family Gen5 --capacity 1 --use-free-limit
+   az sql db create --resource-group rekfar --server rekfar --name Rekfar --collation Norwegian_100_CI_AS --edition GeneralPurpose --compute-model Serverless --family Gen5 --capacity 1 --use-free-limit --free-limit-exhaustion-behavior AutoPause
    ```
 
-3. Choose the behaviour when the monthly free limit is exhausted: **auto-pause until the
-   next month** (stays free, the app goes down) or continue and be billed. Under
+3. `--free-limit-exhaustion-behavior` is the choice of what happens when the monthly free
+   limit is exhausted: `AutoPause` until the next month (stays free, the app goes down) or
+   `BillOverUsage` to continue and be billed. Under
    [P1](https://github.com/rekfar/docs/blob/main/architecture/principles.md) the free choice
-   is the right one for a hobby project — a bill is a worse outcome than an outage.
+   is the right one for a hobby project — a bill is a worse outcome than an outage. It is set
+   to `AutoPause`, which is also the Azure default; it is passed explicitly so that the
+   intent is in the command rather than inherited silently.
 
-4. Set an **Entra admin** on the logical server, and allow Azure services through the
-   firewall so the GitHub runner can connect.
+4. Allow Azure services through the firewall, so the GitHub runner can connect. The
+   `0.0.0.0`–`0.0.0.0` range is the special "allow Azure services" rule, not "allow the
+   internet". A second rule per administrator IP is needed for `sqlcmd` from a laptop.
+
+   ```bash
+   az sql server firewall-rule create -g rekfar -s rekfar -n AllowAllWindowsAzureIps --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0
+   ```
 
 ### Auto-pause and cold starts
 
@@ -46,12 +77,29 @@ ADR follow-up.
 The deploy workflow uses a **federated credential**, so no long-lived database or Azure
 secret is stored in the repository.
 
-1. Create an Entra **app registration** for deployment (e.g. `rekfar-database-deploy`).
+1. Create an Entra **app registration** for deployment (`rekfar-database-deploy`) and a
+   service principal for it.
 2. Add a **federated credential** on it: GitHub → organisation `rekfar`, repository
-   `database`, entity type *Environment*, environment `production`. That produces the
-   subject `repo:rekfar/database:environment:production`, which is why the deploy job
-   declares `environment: production` — the credential will not issue a token without it.
-3. Grant it rights on the database, connected as the Entra admin:
+   `database`, entity type *Environment*, environment `production`. The subject this
+   produces is why the deploy job declares `environment: production` — the credential will
+   not issue a token without it.
+
+   **The subject is not the one the portal suggests.** This organisation has GitHub's OIDC
+   *immutable unique IDs* enabled, so the token GitHub actually presents embeds the numeric
+   organisation and repository IDs:
+
+   ```
+   repo:rekfar@317530418/database@1335787582:environment:production
+   ```
+
+   rather than the documented `repo:rekfar/database:environment:production`. A credential
+   registered with the plain-name form fails with `AADSTS700213: No matching federated
+   identity record found`, naming the subject it did receive — read that error, it tells you
+   exactly what to register. Both forms are registered on the app, so turning the setting off
+   later will not break the deploy.
+3. Grant it rights on the database, connected as the Entra admin. Note that `sqlcmd` can
+   reuse an `az login` session with `--authentication-method ActiveDirectoryDefault`, which
+   avoids handling a password:
 
    ```sql
    CREATE USER [rekfar-database-deploy] FROM EXTERNAL PROVIDER;
@@ -60,7 +108,10 @@ secret is stored in the repository.
 
    `db_owner` is required: publishing creates and alters schema objects. This principal is
    for deployment only — the API connects as its own, far more limited user.
-4. Set `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` as repository
+4. Give the service principal **Reader** on the resource group. Nothing about publishing a
+   dacpac needs ARM rights, but `azure/login` runs `az account set --subscription`, which
+   fails outright if the principal holds no role at all.
+5. Set `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` as repository
    secrets, and `AZURE_SQL_SERVER` and `AZURE_SQL_DATABASE` as repository variables.
 
 If federated credentials turn out to be more setup than is wanted on day one, the fallback

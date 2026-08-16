@@ -17,6 +17,12 @@
     Usage:  sqlcmd -b -S <server> -d <database> -i tests/smoke.sql
 */
 
+-- sqlcmd is an ODBC client and connects with QUOTED_IDENTIFIER OFF, unlike SqlPackage
+-- and every application driver. SQL Server then refuses any DML against a table with a
+-- spatial index or a constraint calling a spatial method — which [ref].Peak has both of
+-- — with error 1934. Set here rather than relying on sqlcmd's -I, so the file is correct
+-- however it is invoked.
+SET QUOTED_IDENTIFIER ON;
 SET NOCOUNT ON;
 SET XACT_ABORT OFF;     -- negative tests must abort a statement, not the transaction
 GO

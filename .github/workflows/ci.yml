@@ -1,0 +1,197 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned deliberately: `@latest` would make builds non-reproducible and let an upstream
+  # release break main. Bump by hand after checking the changelog. The Microsoft.Build.Sql
+  # SDK version is pinned separately, in the .sqlproj.
+  SQLPACKAGE_VERSION: 170.4.83
+  MSSQL_IMAGE: mcr.microsoft.com/mssql/server:2022-latest
+  DB_NAME: Rekfar
+  # Must match <DefaultCollation> in the .sqlproj and the Azure database's own collation.
+  DB_COLLATION: Norwegian_100_CI_AS
+  DACPAC: src/Rekfar.Database/bin/Release/Rekfar.Database.dacpac
+
+jobs:
+  build:
+    name: Build & verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build src/Rekfar.Database --configuration Release --nologo
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dacpac
+          path: ${{ env.DACPAC }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # The container is started by hand rather than as a service container so that the
+      # image's own sqlcmd can be used for the parts SqlPackage cannot do: creating the
+      # database with the right collation, and running the smoke tests.
+      - name: Start SQL Server
+        run: |
+          set -euo pipefail
+          # Ephemeral, throwaway, never leaves the runner. Suffix guarantees SQL Server's
+          # complexity rules are met whatever the random bytes happen to be.
+          PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9')Aa1!"
+          echo "::add-mask::$PASSWORD"
+          echo "MSSQL_SA_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+          docker run -d --name rekfar-sql \
+            -e ACCEPT_EULA=Y \
+            -e MSSQL_PID=Developer \
+            -e MSSQL_SA_PASSWORD="$PASSWORD" \
+            -p 1433:1433 \
+            "$MSSQL_IMAGE"
+
+      - name: Wait for SQL Server
+        run: |
+          set -euo pipefail
+          # Checked separately so that a moved or removed sqlcmd names itself, instead of
+          # looking like a database that never started.
+          docker exec rekfar-sql test -x /opt/mssql-tools18/bin/sqlcmd \
+            || { echo "sqlcmd is not at /opt/mssql-tools18/bin in $MSSQL_IMAGE." >&2; exit 1; }
+          for attempt in $(seq 1 30); do
+            if docker exec rekfar-sql /opt/mssql-tools18/bin/sqlcmd \
+                -C -b -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -Q "SELECT 1" -o /dev/null 2>/dev/null; then
+              echo "Ready after ${attempt} attempt(s)."
+              exit 0
+            fi
+            sleep 4
+          done
+          echo "SQL Server did not become ready." >&2
+          docker logs rekfar-sql
+          exit 1
+
+      - name: Create empty database
+        run: |
+          docker exec rekfar-sql /opt/mssql-tools18/bin/sqlcmd \
+            -C -b -S localhost -U sa -P "$MSSQL_SA_PASSWORD" \
+            -Q "CREATE DATABASE [$DB_NAME] COLLATE $DB_COLLATION;"
+
+      - name: Install SqlPackage
+        run: dotnet tool install --global microsoft.sqlpackage --version "$SQLPACKAGE_VERSION"
+
+      # This is the real test of the dacpac: that it deploys cleanly onto nothing. A
+      # project can build and still fail to publish.
+      - name: Publish to the empty database
+        run: |
+          sqlpackage /Action:Publish \
+            /SourceFile:"$DACPAC" \
+            /Profile:"publish/local.publish.xml" \
+            /TargetServerName:"localhost,1433" \
+            /TargetDatabaseName:"$DB_NAME" \
+            /TargetUser:"sa" \
+            /TargetPassword:"$MSSQL_SA_PASSWORD" \
+            /TargetEncryptConnection:True \
+            /TargetTrustServerCertificate:True
+
+      # Publishing twice must be a no-op. This catches a post-deployment script that is
+      # not idempotent, which would otherwise fail on the second real deploy.
+      - name: Publish again (idempotence)
+        run: |
+          sqlpackage /Action:Publish \
+            /SourceFile:"$DACPAC" \
+            /Profile:"publish/local.publish.xml" \
+            /TargetServerName:"localhost,1433" \
+            /TargetDatabaseName:"$DB_NAME" \
+            /TargetUser:"sa" \
+            /TargetPassword:"$MSSQL_SA_PASSWORD" \
+            /TargetEncryptConnection:True \
+            /TargetTrustServerCertificate:True
+
+      - name: Smoke tests
+        run: |
+          docker cp tests/smoke.sql rekfar-sql:/tmp/smoke.sql
+          docker exec rekfar-sql /opt/mssql-tools18/bin/sqlcmd \
+            -C -b -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -d "$DB_NAME" -i /tmp/smoke.sql
+
+      - name: SQL Server logs
+        if: failure()
+        run: docker logs rekfar-sql
+
+  deploy:
+    name: Deploy to Azure SQL
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Add required reviewers to this environment in the repository settings if a deploy
+    # to main should ever need approval.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write   # federated credential — no long-lived secret in the repo
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dacpac
+          path: artifact
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Install SqlPackage
+        run: dotnet tool install --global microsoft.sqlpackage --version "$SQLPACKAGE_VERSION"
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Acquire a database access token
+        run: |
+          set -euo pipefail
+          TOKEN="$(az account get-access-token --resource https://database.windows.net/ --query accessToken -o tsv)"
+          echo "::add-mask::$TOKEN"
+          echo "SQL_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      # What would change, kept as an artifact. For a database this is the only record of
+      # a deploy that is worth reading afterwards.
+      - name: Deploy report
+        run: |
+          sqlpackage /Action:DeployReport \
+            /SourceFile:"artifact/Rekfar.Database.dacpac" \
+            /Profile:"publish/azure.publish.xml" \
+            /TargetServerName:"${{ vars.AZURE_SQL_SERVER }}" \
+            /TargetDatabaseName:"${{ vars.AZURE_SQL_DATABASE }}" \
+            /AccessToken:"$SQL_ACCESS_TOKEN" \
+            /OutputPath:"deployreport.xml"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deploy-report
+          path: deployreport.xml
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish
+        run: |
+          sqlpackage /Action:Publish \
+            /SourceFile:"artifact/Rekfar.Database.dacpac" \
+            /Profile:"publish/azure.publish.xml" \
+            /TargetServerName:"${{ vars.AZURE_SQL_SERVER }}" \
+            /TargetDatabaseName:"${{ vars.AZURE_SQL_DATABASE }}" \
+            /AccessToken:"$SQL_ACCESS_TOKEN"

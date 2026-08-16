@@ -33,6 +33,8 @@ GO
 
 DECLARE @failed bit;
 DECLARE @count int;
+DECLARE @collation nvarchar(128);
+DECLARE @message nvarchar(2048);
 DECLARE @userId uniqueidentifier = '11111111-1111-1111-1111-111111111111';
 DECLARE @tripId uniqueidentifier = '22222222-2222-2222-2222-222222222222';
 DECLARE @peakId bigint;
@@ -63,8 +65,18 @@ BEGIN TRY
 
     /* ---------- collation intent ---------- */
 
-    IF DATABASEPROPERTYEX(DB_NAME(), 'Collation') <> 'Norwegian_100_CI_AS'
-        THROW 50005, 'Database collation is not Norwegian_100_CI_AS — see docs/operations.md.', 1;
+    -- CONVERT is load-bearing. DATABASEPROPERTYEX returns sql_variant, which outranks
+    -- varchar in type precedence, so comparing it to a bare literal converts the literal
+    -- to sql_variant instead — and sql_variant compares by type family before content.
+    -- nvarchar (Unicode) and varchar (ANSI) are different families, so the two are never
+    -- equal and the assertion fired on every database, correct collation or not.
+    SET @collation = CONVERT(nvarchar(128), DATABASEPROPERTYEX(DB_NAME(), N'Collation'));
+    IF @collation <> N'Norwegian_100_CI_AS'
+    BEGIN
+        SET @message = N'Database collation is ' + ISNULL(@collation, N'(null)')
+                     + N', not Norwegian_100_CI_AS — see docs/operations.md.';
+        THROW 50005, @message, 1;
+    END
 
     SELECT @count = COUNT(*)
     FROM sys.columns

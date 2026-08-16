@@ -1,0 +1,30 @@
+# Build output
+bin/
+obj/
+*.dacpac
+*.dacpac.zip
+*.dbmdl
+*.jfm
+
+# Deployment output — generated, and may contain server/database names
+*.deployreport.xml
+*.publish.sql
+
+# Local secrets and environment
+.env
+*.local
+local/.env
+
+# macOS
+.DS_Store
+
+# Editor / tooling
+.vs/
+.vscode/*
+!.vscode/extensions.json
+.idea
+.claude/worktrees/
+
+# Logs
+logs
+*.log

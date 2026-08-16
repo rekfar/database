@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Publish settings for a local SQL Server container. Connection details are passed on
+  the command line by local/reset.sh — never stored here.
+-->
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <TargetDatabaseName>Rekfar</TargetDatabaseName>
+
+    <!-- The project targets Azure SQL, and local development runs SQL Server 2022. It is
+         a superset, so the platform difference is expected here and only here. -->
+    <AllowIncompatiblePlatform>True</AllowIncompatiblePlatform>
+
+    <!-- The database is created by reset.sh with the Norwegian collation, because
+         collation cannot be changed after creation on Azure SQL and local should match. -->
+    <CreateNewDatabase>False</CreateNewDatabase>
+    <ScriptDatabaseCollation>False</ScriptDatabaseCollation>
+
+    <BlockOnPossibleDataLoss>True</BlockOnPossibleDataLoss>
+    <DropObjectsNotInSource>False</DropObjectsNotInSource>
+    <VerifyDeployment>True</VerifyDeployment>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Publish settings for the Azure SQL database. Server, database and credentials are
+  supplied by the deploy workflow (.github/workflows/deploy.yml) — this file holds
+  behaviour only, so it stays safe to commit.
+-->
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <!-- Refuse to run anything that would discard data. User trips are the one hard
+         reliability line (NFR-REL-4); a deploy that needs data loss needs a human. -->
+    <BlockOnPossibleDataLoss>True</BlockOnPossibleDataLoss>
+
+    <!-- Dropping is never implicit. Removing an object from the project produces a
+         DeployReport entry to review, not a silent DROP on the next push to main. -->
+    <DropObjectsNotInSource>False</DropObjectsNotInSource>
+
+    <!-- The database already exists (created once, with its collation fixed then) and
+         is never recreated by a deploy. -->
+    <CreateNewDatabase>False</CreateNewDatabase>
+    <ScriptDatabaseCollation>False</ScriptDatabaseCollation>
+
+    <VerifyDeployment>True</VerifyDeployment>
+    <IncludeCompositeObjects>False</IncludeCompositeObjects>
+  </PropertyGroup>
+</Project>

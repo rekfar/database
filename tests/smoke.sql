@@ -8,8 +8,11 @@
         * ADR-0009's private/public separation cannot be violated by a bad write.
         * Geometry cannot be stored in the wrong coordinate system (NFR-INTEROP-2).
         * Deleting an account really does remove all of its data (FR-ACC-5, GDPR).
-        * A reference row a user has logged against cannot be deleted by a refresh.
+        * A reference row a user has logged against cannot be deleted by a refresh,
+          but can still be retired by one.
         * Accent-insensitive name search actually works (FR-PEAK-1).
+        * Staged coordinates cannot be transposed (the EPSG:4258 axis-order trap).
+        * Pruning an ingestion run takes its staging snapshot with it.
 
     Run against a scratch database only. Everything happens in one transaction that is
     rolled back, and the guard below refuses to run if the database holds any accounts.
@@ -38,6 +41,7 @@ DECLARE @message nvarchar(2048);
 DECLARE @userId uniqueidentifier = '11111111-1111-1111-1111-111111111111';
 DECLARE @tripId uniqueidentifier = '22222222-2222-2222-2222-222222222222';
 DECLARE @peakId bigint;
+DECLARE @runId bigint;
 
 BEGIN TRY
     BEGIN TRANSACTION;
@@ -55,6 +59,12 @@ BEGIN TRY
 
     SELECT @count = COUNT(*) FROM [ref].SourceDataset WHERE LicenceCode <> 'CC-BY-4.0' OR Attribution <> N'© Kartverket';
     IF @count <> 0 THROW 50003, 'Every seeded dataset must be CC BY 4.0 attributed to Kartverket.', 1;
+
+    -- The roadmap's mitigation for an upstream schema change is knowing which
+    -- specification version the ingestion code was written against, so a dataset that has
+    -- an ingestion job must name one. The two not yet ingested are expected to be NULL.
+    SELECT @count = COUNT(*) FROM [ref].SourceDataset WHERE Code IN ('ssr', 'hoydedata') AND ProductSpecVersion IS NULL;
+    IF @count <> 0 THROW 50007, 'An ingested dataset is missing its pinned ProductSpecVersion.', 1;
 
     /* ---------- spatial index on the map's hot query ---------- */
 
@@ -191,6 +201,82 @@ BEGIN TRY
         SET @failed = 1;
     END CATCH
     IF @failed = 0 THROW 50025, 'A peak referenced by a logged trip was deletable.', 1;
+
+    /* ---------- …but a refresh must still be able to retire it ---------- */
+
+    -- The other half of the rule above. Retirement in place is the documented behaviour
+    -- of a rebuild (docs/operations.md), so if this ever stopped working, a peak the new
+    -- rule no longer admits would have nowhere to go.
+    UPDATE [ref].Peak SET IsActive = 0, RetiredAt = SYSUTCDATETIME() WHERE Id = @peakId;
+
+    SELECT @count = COUNT(*) FROM app.TripPeak WHERE PeakId = @peakId;
+    IF @count <> 1 THROW 50026, 'Retiring a peak lost the trip that logged it.', 1;
+
+    SET @failed = 0;
+    BEGIN TRY
+        UPDATE [ref].Peak SET IsActive = 0, RetiredAt = NULL WHERE Id = @peakId;
+    END TRY
+    BEGIN CATCH
+        SET @failed = 1;
+    END CATCH
+    IF @failed = 0 THROW 50027, 'A peak was retired without a retirement date.', 1;
+
+    UPDATE [ref].Peak SET IsActive = 1, RetiredAt = NULL WHERE Id = @peakId;
+
+    /* ---------- ingestion staging ---------- */
+
+    INSERT INTO ingest.[Run] (SourceDatasetId) VALUES (1);
+    SET @runId = SCOPE_IDENTITY();
+
+    INSERT INTO ingest.SsrPlace (RunId, Stedsnummer, [Name], NavneobjektType, NavneobjektGruppe, Kommunenummer, PointCount)
+    VALUES (@runId, '148421', N'Galdhøpiggen', N'fjell', N'høyder', '3434', 1);
+
+    INSERT INTO ingest.SsrPlacePoint (RunId, Stedsnummer, PointIndex, Latitude, Longitude)
+    VALUES (@runId, '148421', 0, 61.636440, 8.312477);
+
+    -- The extract declares urn:ogc:def:crs:EPSG::4258, which puts latitude first. A
+    -- parser that reads the pair the other way round produces coordinates that are each
+    -- individually valid, so nothing but a bounds check catches it.
+    SET @failed = 0;
+    BEGIN TRY
+        INSERT INTO ingest.SsrPlacePoint (RunId, Stedsnummer, PointIndex, Latitude, Longitude)
+        VALUES (@runId, '148421', 1, 8.312477, 61.636440);
+    END TRY
+    BEGIN CATCH
+        SET @failed = 1;
+    END CATCH
+    IF @failed = 0 THROW 50040, 'A transposed coordinate was accepted into staging.', 1;
+
+    -- A cached height must say which model produced it, for the same reason [ref].Peak
+    -- refuses an elevation without its provenance.
+    SET @failed = 0;
+    BEGIN TRY
+        INSERT INTO ingest.ElevationSample (Latitude, Longitude, ElevationMeters)
+        VALUES (61.636440, 8.312477, 2462.65);
+    END TRY
+    BEGIN CATCH
+        SET @failed = 1;
+    END CATCH
+    IF @failed = 0 THROW 50041, 'A cached elevation was accepted without its datakilde.', 1;
+
+    -- "Asked, and there was no height here" is a real answer and must be cacheable, or
+    -- every run re-asks the same uncovered points.
+    INSERT INTO ingest.ElevationSample (Latitude, Longitude, ElevationMeters, Datakilde, Terreng)
+    VALUES (61.636440, 8.312477, 2462.65, 'dtm1', N'ÅpentOmråde'),
+           (61.640680, 8.306035, NULL,    NULL,   NULL);
+
+    -- Pruning a snapshot is a DELETE of its run row; anything left behind would
+    -- accumulate silently, since nothing else references staging.
+    DELETE FROM ingest.[Run] WHERE Id = @runId;
+
+    SELECT @count = (SELECT COUNT(*) FROM ingest.SsrPlace WHERE RunId = @runId)
+                  + (SELECT COUNT(*) FROM ingest.SsrPlacePoint WHERE RunId = @runId);
+    IF @count <> 0 THROW 50042, 'Deleting an ingestion run left its staging snapshot behind.', 1;
+
+    -- The elevation cache is keyed by coordinate, not by run, and must survive: it is
+    -- what makes re-running ingestion cheap.
+    SELECT @count = COUNT(*) FROM ingest.ElevationSample WHERE Latitude = 61.636440 AND Longitude = 8.312477;
+    IF @count <> 1 THROW 50043, 'Pruning a run destroyed the elevation cache.', 1;
 
     /* ---------- FR-ACC-5: deleting the account removes everything ---------- */
 

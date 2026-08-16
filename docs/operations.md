@@ -165,6 +165,30 @@ A full rebuild — new peak rule, or a corrupted catalogue — has one constrain
 foreign key is deliberate. A rebuild updates rows in place and retires the ones the new rule
 no longer admits (`IsActive = 0`); it does not truncate.
 
+### Re-running against data already staged
+
+A **rule change does not need a re-download.** The parsed extract stays in
+`ingest.SsrPlace` / `ingest.SsrPlacePoint` for as long as its `ingest.Run` row is kept, and
+sampled heights stay in `ingest.ElevationSample` indefinitely, so applying a new
+`ref.PeakRule` version is a local merge over the most recent snapshot. Only a *wider* rule —
+one admitting `navneobjekttype` values that were never staged — needs the extract fetched
+and sampled again.
+
+Prune an old snapshot by deleting its run; staging cascades, and the elevation cache does
+not, which is the point of keying it by coordinate:
+
+```sql
+DELETE FROM ingest.[Run] WHERE Id = @runId;
+```
+
+Force re-sampling of stale heights — the terrain model is itself re-flown and republished —
+by deleting from the cache. There is no expiry policy in the schema because there is not yet
+a reason to prefer one:
+
+```sql
+DELETE FROM ingest.ElevationSample WHERE SampledAt < '2026-01-01';
+```
+
 Check what happened afterwards:
 
 ```sql

@@ -19,6 +19,10 @@ erDiagram
     PEAK        }o--o{ AREA          : "located in"
     PEAK_RULE   ||--o{ PEAK_RULE_OBJECT_TYPE : admits
     INGEST_RUN  }o--|| SOURCE_DATASET : refreshes
+    INGEST_RUN  ||--o{ SSR_PLACE      : stages
+    SSR_PLACE   ||--o{ SSR_PLACE_POINT : "has position(s)"
+    SSR_PLACE   ||--o| PEAK           : "merged into"
+    SSR_PLACE_POINT }o--o| ELEVATION_SAMPLE : "sampled at (by coordinate)"
 
     AUTH_USER {
         uniqueidentifier Id PK
@@ -82,6 +86,27 @@ erDiagram
         nvarchar SourceVersion
         int RowsRead
     }
+    SSR_PLACE {
+        bigint RunId PK "FK, cascades"
+        varchar Stedsnummer PK "SSR place id"
+        nvarchar Name "chosen from up to 5"
+        nvarchar NavneobjektType "fjell|topp|…"
+        varchar Kommunenummer "→ ref.Area"
+        smallint PointCount
+    }
+    SSR_PLACE_POINT {
+        bigint RunId PK
+        varchar Stedsnummer PK
+        smallint PointIndex PK
+        decimal Latitude "9,6 — EPSG:4258"
+        decimal Longitude "9,6"
+    }
+    ELEVATION_SAMPLE {
+        decimal Latitude PK "9,6"
+        decimal Longitude PK "9,6"
+        decimal ElevationMeters "null = no coverage"
+        varchar Datakilde "dtm1|dom1|…"
+    }
 ```
 
 | Table | Purpose | Traces to |
@@ -96,6 +121,8 @@ erDiagram
 | `ref.SourceDataset` | Provenance, licence and attribution per dataset | FR-REF-3, NFR-LEGAL-2 |
 | `ref.PeakRule`, `ref.PeakRuleObjectType` | The versioned rule defining what counts as a peak | FR-REF-11, ADR-0012 §5.1 |
 | `ingest.Run` | Refresh history per dataset | FR-REF-3/4 |
+| `ingest.SsrPlace`, `ingest.SsrPlacePoint` | The parsed SSR extract, per run, before the peak rule is applied | FR-REF-1/11 |
+| `ingest.ElevationSample` | Cached DTM heights, keyed by coordinate | FR-REF-10 |
 
 ## Decisions worth knowing
 
@@ -126,12 +153,40 @@ for the two to disagree about who exists.
 
 **Peak-to-area membership is precomputed.** Resolved once at ingestion into `ref.PeakArea`
 rather than by polygon containment at query time, so filtering by area is an index seek
-(NFR-PERF-2).
+(NFR-PERF-2). It needs no spatial join at all: every SSR place carries its `kommunenummer`
+as an attribute, so the membership is copied rather than derived.
 
 **`ref.PeakRule` ships empty.** The rule that decides which SSR points qualify as peaks is
 still undecided, and it is a real decision with a documented rationale (FR-REF-11) — not a
 default this schema should quietly invent. Seeding it is the first step of the Phase 1
 catalogue import, not of the schema.
+
+**Staging exists so the rule can be decided with the data in front of you.** The published
+extract is a 2.6 GB GML file and SSR carries no heights, so parsing it and sampling the
+terrain model is the expensive half of ingestion. `ingest.SsrPlace` and
+`ingest.SsrPlacePoint` hold the result of that half, per run; applying the peak rule and
+merging into `ref.Peak` is then a local set operation that can be re-run whenever the rule
+changes. A new rule version is a re-MERGE, not a re-download — which is what makes
+FR-REF-11's promise of a reproducible catalogue affordable in practice.
+
+**A snapshot is complete or absent, never half-written.** Staging is keyed by run rather
+than replaced in place, so a failed run cannot overwrite the previous extract, and two runs
+can be diffed to see what upstream actually changed. Pruning is a delete of the
+`ingest.Run` row, which cascades.
+
+**The elevation cache is keyed by coordinate, not by run.** A point's terrain height does
+not depend on which extract mentioned it, so a re-run, a widened rule, or a later dataset
+asking about the same point all hit a row that already exists. "Asked, and there was no
+height here" is cached too, as a NULL elevation — otherwise every run re-asks the same
+uncovered points and gets the same nothing.
+
+**Staging is not spatial.** It stores `decimal(9, 6)` latitude and longitude, which is
+exactly the precision the extract publishes, and the conversion to `geography` happens in
+the merge. That keeps the cache key exact — a float would round differently between runs
+and miss — and keeps bulk loading free of the `QUOTED_IDENTIFIER` requirement that spatial
+constraints impose on every writer. The bounds checks on those columns are set to mainland
+Norway rather than the globe on purpose: the source declares `EPSG:4258`, which puts
+latitude first, and a transposed pair is individually valid but silently wrong.
 
 ## Not modelled yet
 
@@ -150,20 +205,21 @@ schema for months.
 | `ConnectedService`, `Activity` | 2 | Strava, then Garmin (ADR-0008) |
 | `Friendship`, trip sharing | 3 | FR-SOCIAL, FR-SHARE. Link sharing will be a token table, not a privacy level |
 
-Two things are also deliberately absent from the current model:
+One thing is also deliberately absent from the current model:
 
 - **`ref.Area.Boundary` has no spatial index.** Boundaries are not loaded yet, and an index
   on a column that is entirely `NULL` is maintenance for nothing. It goes in with the data.
-- **Ingestion staging tables.** `ingest` holds only the run log so far. Staging shapes
-  should be designed against a real Kartverket download, not guessed at.
 
 ## Volumes
 
-Rough figures, for sizing against the free tier's 32 GB:
+Measured against the published extract on 2026-08-16, not estimated:
 
 | Table | Expected | Notes |
 | --- | --- | --- |
-| `ref.Peak` | 10k–100k rows | SSR holds ~1M place names; the peak rule selects a fraction of them |
+| `ref.Peak` | ~30k rows or fewer | The extract holds 1,059,349 places; 175,109 are in the `høyder` group, of which `fjell` (25,382) and `topp` (4,566) are the staged candidates. The elevation floor in rule 1.0 takes it down from there |
+| `ingest.SsrPlace` | ~30k rows per retained run | One snapshot per run; old runs are pruned by deleting their `ingest.Run` row |
+| `ingest.SsrPlacePoint` | ~66k rows per retained run | Averages 2.2 points per place — 14,357 of the candidates carry a MultiPoint of 2–16 positions |
+| `ingest.ElevationSample` | ~66k rows, growing slowly | Keyed by coordinate, never pruned with a run |
 | `ref.Area` | ~400 kommuner + curated regions | Boundary geometry dominates the size once loaded |
 | `app.Trip` | Hundreds per user | A personal logbook |
 

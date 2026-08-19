@@ -10,3 +10,4 @@
 */
 
 :r ./Seed.SourceDataset.sql
+:r ./Seed.PeakRule.sql

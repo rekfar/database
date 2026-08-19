@@ -12,6 +12,7 @@
           but can still be retired by one.
         * Accent-insensitive name search actually works (FR-PEAK-1).
         * Staged coordinates cannot be transposed (the EPSG:4258 axis-order trap).
+        * The peak rule is seeded, and a peak can only cite a rule that exists.
         * Pruning an ingestion run takes its staging snapshot with it.
 
     Run against a scratch database only. Everything happens in one transaction that is
@@ -66,6 +67,17 @@ BEGIN TRY
     SELECT @count = COUNT(*) FROM [ref].SourceDataset WHERE Code IN ('ssr', 'hoydedata') AND ProductSpecVersion IS NULL;
     IF @count <> 0 THROW 50007, 'An ingested dataset is missing its pinned ProductSpecVersion.', 1;
 
+    /* ---------- the peak rule (FR-REF-11, ADR-0012 §5.1) ---------- */
+
+    -- The schema shipped this table empty on purpose; once a version exists, the catalogue's
+    -- reproducibility depends on it being there and on its types being recorded as rows.
+    SELECT @count = COUNT(*) FROM [ref].PeakRule WHERE [Version] = '1.0';
+    IF @count <> 1 THROW 50008, 'Peak rule 1.0 is not seeded — see docs/peak-rule.md.', 1;
+
+    SELECT @count = COUNT(*) FROM [ref].PeakRuleObjectType
+    WHERE PeakRuleVersion = '1.0' AND NavneobjektType IN (N'fjell', N'topp');
+    IF @count <> 2 THROW 50009, 'Peak rule 1.0 must admit exactly the fjell and topp types.', 1;
+
     /* ---------- spatial index on the map's hot query ---------- */
 
     SELECT @count = COUNT(*)
@@ -92,6 +104,18 @@ BEGIN TRY
     FROM sys.columns
     WHERE object_id = OBJECT_ID('[ref].Peak') AND name = 'SearchName' AND collation_name = 'Latin1_General_100_CI_AI';
     IF @count <> 1 THROW 50006, '[ref].Peak.SearchName must be accent-insensitive — and not a Norwegian collation, which does not fold ø.', 1;
+
+    /* ---------- a peak cannot cite a rule version that does not exist ---------- */
+
+    SET @failed = 0;
+    BEGIN TRY
+        INSERT INTO [ref].Peak (SourceDatasetId, ExternalId, [Name], SearchName, NavneobjektType, [Location], PeakRuleVersion, FetchedAt)
+        VALUES (1, 'smoke-0004', N'Ingen regel', N'Ingen regel', N'fjell', geography::Point(61.6, 8.3, 4326), '99.9', SYSUTCDATETIME());
+    END TRY
+    BEGIN CATCH
+        SET @failed = 1;
+    END CATCH
+    IF @failed = 0 THROW 50014, 'A peak was admitted by a rule version that does not exist.', 1;
 
     /* ---------- fixtures ---------- */
 

@@ -156,10 +156,12 @@ rather than by polygon containment at query time, so filtering by area is an ind
 (NFR-PERF-2). It needs no spatial join at all: every SSR place carries its `kommunenummer`
 as an attribute, so the membership is copied rather than derived.
 
-**`ref.PeakRule` ships empty.** The rule that decides which SSR points qualify as peaks is
-still undecided, and it is a real decision with a documented rationale (FR-REF-11) — not a
-default this schema should quietly invent. Seeding it is the first step of the Phase 1
-catalogue import, not of the schema.
+**The peak rule is data, and version 1.0 is seeded.** `fjell` or `topp`, inside mainland
+Norway, highest sampled point at 100 m or more — 28,876 of the extract's 1,058,852 places.
+The type filter is the editorial judgement; the floor only removes sea-level artefacts. The
+reasoning, the measurements it was chosen against, and how to supersede it are in
+[peak-rule.md](peak-rule.md). Every peak carries the version that admitted it, and a
+published version is never edited: a change is a new version and a re-merge.
 
 **Staging exists so the rule can be decided with the data in front of you.** The published
 extract is a 2.6 GB GML file and SSR carries no heights, so parsing it and sampling the

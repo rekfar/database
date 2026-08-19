@@ -62,6 +62,7 @@ var options = new IngestionOptions
 {
     ExtractPath = builder.Configuration["Ingestion:ExtractPath"],
     NavneobjektTypes = builder.Configuration["Ingestion:NavneobjektTypes"] ?? new IngestionOptions().NavneobjektTypes,
+    ExtractUrl = builder.Configuration["Ingestion:ExtractUrl"] ?? new IngestionOptions().ExtractUrl,
     HoydedataBaseUrl = builder.Configuration["Ingestion:HoydedataBaseUrl"] ?? new IngestionOptions().HoydedataBaseUrl,
     PeakRuleVersion = builder.Configuration["Ingestion:PeakRuleVersion"] ?? new IngestionOptions().PeakRuleVersion,
     ElevationConcurrency = int.TryParse(builder.Configuration["Ingestion:ElevationConcurrency"], out var concurrency)
@@ -69,18 +70,9 @@ var options = new IngestionOptions
         : new IngestionOptions().ElevationConcurrency,
 };
 
-var extractPath = options.ExtractPath;
-if (string.IsNullOrWhiteSpace(extractPath))
+if (options.ExtractPath is { Length: > 0 } supplied && !File.Exists(supplied))
 {
-    // Until the download stage lands, the extract is supplied rather than fetched.
-    logger.LogCritical(
-        "No extract. Set Ingestion__ExtractPath to a Kartverket SSR .zip or .gml — see src/Rekfar.Ingest.Peaks/README.md.");
-    return ExitMisconfigured;
-}
-
-if (!File.Exists(extractPath))
-{
-    logger.LogCritical("The extract {ExtractPath} does not exist.", extractPath);
+    logger.LogCritical("The extract {ExtractPath} does not exist.", supplied);
     return ExitMisconfigured;
 }
 
@@ -101,8 +93,46 @@ try
 
     try
     {
-        // Download, parse and stage, sample elevations, then apply the rule and merge. Only
-        // the download is still missing; the extract is supplied rather than fetched.
+        // Download, parse and stage, sample elevations, apply the rule, merge.
+        //
+        // One HTTP client serves both Kartverket services: the same retry policy suits a
+        // 138 MB download and a 50-point query, and neither is chatty enough to want its own.
+        // Requests are absolute, so there is no base address.
+        // Not disposed separately: HttpClient owns the handler chain.
+        var httpHandler = new RetryHandler(loggerFactory.CreateLogger<RetryHandler>(), options.ElevationMaxAttempts)
+        {
+            InnerHandler = new HttpClientHandler(),
+        };
+
+        using var httpClient = new HttpClient(httpHandler)
+        {
+            // Generous, because it covers a 138 MB download as well as a point query.
+            Timeout = TimeSpan.FromMinutes(15),
+        };
+
+        // Identify the caller on a free public service, so Kartverket can see who is asking
+        // and has somewhere to look if this job ever misbehaves.
+        httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Rekfar-Ingest-Peaks/0.1 (+https://github.com/rekfar/database)");
+
+        // An extract supplied by hand is used as it stands; otherwise the current one is
+        // fetched. Both paths converge here, so a run against a saved file exercises exactly
+        // the same code as a scheduled one.
+        DownloadedExtract? downloaded = null;
+        string extractPath;
+
+        if (options.ExtractPath is { Length: > 0 } suppliedExtract)
+        {
+            extractPath = suppliedExtract;
+        }
+        else
+        {
+            downloaded = await new SsrExtractDownloader(httpClient, loggerFactory.CreateLogger<SsrExtractDownloader>())
+                .DownloadAsync(options.ExtractUrl, cancellation.Token)
+                .ConfigureAwait(false);
+            extractPath = downloaded.Path;
+        }
+
+        using var _ = downloaded;
         using var extract = SsrExtractFile.Open(extractPath);
         logger.LogInformation("Reading {Extract}.", extract.Name);
 
@@ -128,27 +158,8 @@ try
                 reader.PlacesWithoutGeometry);
         }
 
-        // Elevation is sampled for everything staged, not only for what the peak rule will
-        // eventually admit: the cache outlives the rule, and a later, wider rule should not
-        // have to go back to the service for points this run already had in hand.
-        // Not disposed here: HttpClient owns the handler chain and disposes it.
-        var httpHandler = new RetryHandler(loggerFactory.CreateLogger<RetryHandler>(), options.ElevationMaxAttempts)
-        {
-            InnerHandler = new HttpClientHandler(),
-        };
-
-        using var httpClient = new HttpClient(httpHandler)
-        {
-            BaseAddress = new Uri(options.HoydedataBaseUrl),
-            Timeout = TimeSpan.FromSeconds(60),
-        };
-
-        // Identify the caller on a free public service, so Kartverket can see who is asking
-        // and has somewhere to look if this job ever misbehaves.
-        httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Rekfar-Ingest-Peaks/0.1 (+https://github.com/rekfar/database)");
-
         var sampler = new ElevationSampler(
-            new HoydedataClient(httpClient, loggerFactory.CreateLogger<HoydedataClient>()),
+            new HoydedataClient(httpClient, options.HoydedataBaseUrl, loggerFactory.CreateLogger<HoydedataClient>()),
             loggerFactory.CreateLogger<ElevationSampler>(),
             options.ElevationBatchSize,
             options.ElevationConcurrency);

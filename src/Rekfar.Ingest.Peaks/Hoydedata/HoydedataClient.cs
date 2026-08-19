@@ -26,7 +26,7 @@ namespace Rekfar.Ingest.Peaks.Hoydedata;
 /// coverage. Hence <see cref="ToRequestPair"/> and the echo check below.
 /// </para>
 /// </remarks>
-internal sealed class HoydedataClient(HttpClient httpClient, ILogger<HoydedataClient> logger)
+internal sealed class HoydedataClient(HttpClient httpClient, string baseUrl, ILogger<HoydedataClient> logger)
 {
     /// <summary>The service's documented ceiling; 51 is refused with HTTP 422.</summary>
     public const int MaxPointsPerRequest = 50;
@@ -58,7 +58,7 @@ internal sealed class HoydedataClient(HttpClient httpClient, ILogger<HoydedataCl
                 nameof(points));
         }
 
-        var response = await SendAsync(BuildRequestUri(points), cancellationToken).ConfigureAwait(false);
+        var response = await SendAsync(baseUrl.TrimEnd('/') + "/" + BuildRequestUri(points), cancellationToken).ConfigureAwait(false);
         return Map(points, response);
     }
 

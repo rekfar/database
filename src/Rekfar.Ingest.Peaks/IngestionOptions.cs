@@ -13,12 +13,15 @@ internal sealed class IngestionOptions
     /// Path to the SSR extract — either the published <c>.zip</c> or an unpacked <c>.gml</c>.
     /// </summary>
     /// <remarks>
-    /// Required for now. When the download stage lands, an absent path will mean "fetch the
-    /// current extract" rather than "fail"; supplying one will stay supported, because
-    /// re-running against the exact file a previous run read is how a parsing change is
-    /// compared against a known result.
+    /// Optional. Left unset, the job downloads the current extract from
+    /// <see cref="ExtractUrl"/>. Setting it is how a run is repeated against the exact file an
+    /// earlier one read — which is how a parsing change is compared against a known result.
     /// </remarks>
     public string? ExtractPath { get; init; }
+
+    /// <summary>Where the extract is published. A direct download: no order API, no key.</summary>
+    public string ExtractUrl { get; init; } =
+        "https://nedlasting.geonorge.no/geonorge/Basisdata/Stedsnavn/GML/Basisdata_0000_Norge_4258_Stedsnavn_GML.zip";
 
     /// <summary>
     /// The <c>navneobjekttype</c> values to stage, comma-separated. Defaults to the two the

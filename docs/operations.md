@@ -118,6 +118,78 @@ If federated credentials turn out to be more setup than is wanted on day one, th
 is a `SqlPackage /TargetConnectionString:` from a repository secret. It works, and it means a
 long-lived credential in GitHub that has to be rotated by hand — prefer OIDC.
 
+## The scheduled peak refresh
+
+`.github/workflows/ingest-peaks.yml` runs the Kartverket peak import at 03:00 UTC on the
+first of each month, and can be run by hand from the Actions tab. It fetches the current SSR
+extract, stages it, samples any elevations it does not already have, and merges the result
+into `ref.Peak` under the seeded peak rule. A cold run takes about six minutes; one with a
+warm elevation cache takes under a minute.
+
+SSR changes continuously and Kartverket republishes daily, but a peak catalogue does not need
+chasing — monthly is frequent enough for reference data, and it keeps the load on a free
+public service proportionate.
+
+### Its own principal, not the deploy one
+
+The refresh authenticates as a **separate, least-privileged** identity
+([ADR-0015](https://github.com/rekfar/docs/blob/main/adr/0015-ingestion-lives-in-the-database-repository.md)).
+A job that refreshes reference data has no business being able to read a diary note, and the
+deploy principal is `db_owner`.
+
+1. Create an Entra **app registration** for it (`rekfar-ingest-peaks`) and a service principal.
+2. Add a **federated credential**: GitHub → organisation `rekfar`, repository `database`,
+   entity type *Environment*, environment `production`. Note the immutable-ID subject trap
+   described under [deployment authentication](#deployment-authentication) — it applies here
+   too.
+3. Create the database user and grant it exactly what the import needs, connected as the
+   Entra admin:
+
+   ```sql
+   CREATE USER [rekfar-ingest-peaks] FROM EXTERNAL PROVIDER;
+   GRANT SELECT, INSERT, UPDATE ON SCHEMA::ingest TO [rekfar-ingest-peaks];
+   GRANT EXECUTE ON SCHEMA::ingest TO [rekfar-ingest-peaks];
+   GRANT SELECT, INSERT, UPDATE ON SCHEMA::[ref] TO [rekfar-ingest-peaks];
+   GRANT DELETE ON OBJECT::[ref].PeakArea TO [rekfar-ingest-peaks];
+   ```
+
+   **No rights on `app` or `auth` at all** — that is the point of the separate identity. The
+   single `DELETE` is on `ref.PeakArea` alone, because the merge removes stale kommune
+   memberships; it deliberately cannot delete a peak, which the retire-never-delete design
+   forbids anyway.
+
+4. Give the service principal **Reader** on the resource group, for the same reason the
+   deploy principal needs it: `azure/login` runs `az account set`, which fails outright if the
+   principal holds no role.
+5. Add `AZURE_INGEST_CLIENT_ID` as a repository secret. `AZURE_TENANT_ID`,
+   `AZURE_SUBSCRIPTION_ID`, `AZURE_SQL_SERVER` and `AZURE_SQL_DATABASE` are already set for
+   the deploy workflow and are reused.
+
+### Reading the result
+
+The workflow's step summary records the outcome; the detail is in `ingest.Run`:
+
+```sql
+SELECT TOP 12 d.Code, r.Status, r.StartedAt, r.SourceVersion,
+       r.RowsRead, r.RowsInserted, r.RowsUpdated, r.RowsRetired, r.Message
+FROM ingest.[Run] r
+JOIN [ref].SourceDataset d ON d.Id = r.SourceDatasetId
+ORDER BY r.StartedAt DESC;
+```
+
+A healthy monthly run reads about 29,900 places and inserts, updates and retires almost
+nothing. What to look at:
+
+| Sign | What it usually means |
+| --- | --- |
+| `RowsRead` far below ~29,900 | Parsing has broken — an upstream schema or distribution change |
+| `RowsRetired` unexpectedly large | The same, or a rule change nobody intended. Retired peaks are kept, so this is recoverable |
+| `SourceVersion` unchanged for months | The extract is not being republished, or the wrong file is being fetched |
+| Status `failed` | The message carries the reason; the run left its staging snapshot and every elevation it managed to sample |
+
+Nothing is lost by a failed run. Staging is keyed by run, the elevation cache is keyed by
+coordinate and outlives runs, and the merge is idempotent — so the fix is to run it again.
+
 ## Backups
 
 Azure SQL takes **automated backups** with point-in-time restore; on the free offer the

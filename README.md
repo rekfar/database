@@ -120,8 +120,12 @@ casually: `BlockOnPossibleDataLoss` stops any deploy that would discard data, an
 `DropObjectsNotInSource` is off, so removing an object from the project produces a line in
 the deploy report to review rather than a `DROP` on the next push.
 
-Azure authentication uses a **federated credential** (OIDC), so there is no long-lived
-secret in the repository. Setup steps, along with backup and restore, are in
+`.github/workflows/ingest-peaks.yml` is separate, and runs on a clock rather than on a
+commit: it refreshes the Kartverket peak catalogue monthly, as its own least-privileged
+principal with no rights on `app` or `auth`.
+
+Azure authentication uses a **federated credential** (OIDC) for both, so there is no
+long-lived secret in the repository. Setup steps, along with backup and restore, are in
 [docs/operations.md](docs/operations.md).
 
 ### Required repository configuration
@@ -138,6 +142,7 @@ Secrets, under _Secrets_:
 | Secret | Where it comes from |
 | --- | --- |
 | `AZURE_CLIENT_ID` | The Entra app registration used for deployment |
+| `AZURE_INGEST_CLIENT_ID` | The Entra app registration used by the peak refresh |
 | `AZURE_TENANT_ID` | Entra tenant |
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription |
 
@@ -148,7 +153,10 @@ Secrets, under _Secrets_:
 - [docs/conventions.md](docs/conventions.md) — naming, types, keys, code values, and the
   contract with the backend.
 - [docs/operations.md](docs/operations.md) — creating the Azure database, deploy
-  authentication, backups, restore, GDPR deletion, reference-data rebuild.
+  authentication, the scheduled peak refresh, backups, restore, GDPR deletion,
+  reference-data rebuild.
+- [docs/peak-rule.md](docs/peak-rule.md) — which SSR places become peaks, why, and how to
+  supersede the rule.
 
 Architecture, requirements and decisions live in the
 [docs repository](https://github.com/rekfar/docs).

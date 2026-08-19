@@ -33,7 +33,8 @@ public sealed class HoydedataClientTests
 
     private static HoydedataClient Client(StubHandler handler)
         => new(
-            new HttpClient(handler) { BaseAddress = new Uri("https://example.test/hoydedata/v1/") },
+            new HttpClient(handler),
+            "https://example.test/hoydedata/v1/",
             NullLogger<HoydedataClient>.Instance);
 
     [Fact]

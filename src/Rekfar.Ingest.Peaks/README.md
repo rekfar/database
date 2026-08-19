@@ -9,9 +9,9 @@ rather than the domain — see
 for the reasoning and for the named trigger to revisit it. Which SSR product it reads, and
 why, is [ADR-0016](https://github.com/rekfar/docs/blob/main/adr/0016-ssr-general-use-distribution.md).
 
-> **Status: complete but not scheduled.** The job reads an SSR extract, stages it, fills the
-> elevation cache, applies the peak rule and merges the result into `ref.Peak`. What remains
-> is fetching the extract rather than being handed it, and running on a schedule.
+> **Status: complete.** The job fetches the current SSR extract, stages it, fills the
+> elevation cache, applies the peak rule and merges the result into `ref.Peak`. It runs
+> monthly from `.github/workflows/ingest-peaks.yml`.
 
 ## Running it
 
@@ -37,6 +37,18 @@ export ConnectionStrings__Rekfar="Server=rekfar.database.windows.net;Database=Re
 
 `TrustServerCertificate=True` is for the local container's self-signed certificate only.
 Never set it against Azure.
+
+## Running on a schedule
+
+`.github/workflows/ingest-peaks.yml` runs it at 03:00 UTC on the first of each month, and on
+demand from the Actions tab. It authenticates as its own least-privileged principal — not the
+`db_owner` one the schema deploy uses — with no rights at all on `app` or `auth`. Setting that
+identity up is in [docs/operations.md](../../docs/operations.md), along with how to read the
+result out of `ingest.Run`.
+
+Nothing is lost if a scheduled run fails: staging is keyed by run, the elevation cache is
+keyed by coordinate and outlives runs, and the merge is idempotent. The fix is to run it
+again.
 
 ## Exit codes
 
@@ -68,6 +80,21 @@ One JSON object per line, on stdout. Every line emitted after the run opens carr
 ```bash
 dotnet run --project src/Rekfar.Ingest.Peaks | jq -r '"\(.LogLevel)\t\(.Message)"'
 ```
+
+## Getting the extract
+
+Left to itself the job downloads the current whole-country extract from Geonorge — a direct
+download, no order API and no key — streams it to a temporary file, and deletes it afterwards.
+A truncated transfer is checked for against the declared content length, because a zip that
+stops early fails later with something far less obvious.
+
+Setting `Ingestion__ExtractPath` skips the download and uses that file instead, which is how a
+run is repeated against the exact extract an earlier one read. Both paths converge on the same
+code, so a local run exercises what the scheduled one does.
+
+Which snapshot was read is never inferred from the download. The parser takes
+`datauttaksdato` out of the file itself, and that is what the run records as its source
+version.
 
 ## Reading the extract
 
@@ -169,7 +196,8 @@ Re-running an unchanged snapshot reports `0 inserted, 0 updated, 0 retired`.
 | Setting | Default | Notes |
 | --- | --- | --- |
 | `ConnectionStrings__Rekfar` | — | Required. Never in a file in this repository |
-| `Ingestion__ExtractPath` | — | Required for now: the SSR `.zip` or `.gml` |
+| `Ingestion__ExtractPath` | — | Optional: a local `.zip` or `.gml`. Unset means fetch the current extract |
+| `Ingestion__ExtractUrl` | the Geonorge whole-country GML in EPSG:4258 | |
 | `Ingestion__NavneobjektTypes` | `fjell,topp` | Widening the rule is a setting, not a code change |
 | `Ingestion__PeakRuleVersion` | `1.0` | Must already be seeded — see [peak-rule.md](../../docs/peak-rule.md) |
 | `Ingestion__HoydedataBaseUrl` | `https://ws.geonorge.no/hoydedata/v1/` | |
@@ -218,6 +246,7 @@ Database/SourceDataset.cs   The dataset ids fixed by the post-deployment seed
 Ssr/SsrGmlReader.cs         Streams places out of the GML extract
 Ssr/PlaceNameSelector.cs    Chooses the one name a place is displayed under
 Ssr/SsrPlace.cs             A parsed place, matching ingest.SsrPlace
+Ssr/SsrExtractDownloader.cs Fetches the published extract
 Ssr/SsrExtractFile.cs       Opens the extract, .zip or .gml
 Ssr/MainlandNorwayBounds.cs The catalogue's extent, and the axis-order guard
 Database/SsrStagingWriter.cs      Bulk-loads places and points into ingest

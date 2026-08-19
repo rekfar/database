@@ -1,0 +1,90 @@
+name: Ingest peaks
+
+# The scheduled Kartverket refresh (ADR-0010 T8, ADR-0015, capability C12).
+#
+# Deliberately its own workflow rather than a job in ci.yml: it is triggered by a clock
+# rather than by a commit, it writes to the live database, and it must be runnable by hand
+# without also republishing the schema.
+
+on:
+  schedule:
+    # 03:00 UTC on the first of the month. SSR changes continuously and Kartverket
+    # republishes the extract daily, but a peak catalogue does not need chasing: the run
+    # costs about 1,150 requests to a free public service, and monthly is frequent enough
+    # for a hobby project's reference data (P1).
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+    inputs:
+      peakRuleVersion:
+        description: 'Peak rule version to merge under (must already be seeded)'
+        required: false
+        default: '1.0'
+
+# Never two refreshes at once. They would not corrupt anything — staging is keyed by run and
+# the merge is idempotent — but they would double the load on Kartverket for no gain.
+concurrency:
+  group: ingest-peaks
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ingest:
+    name: Refresh the peak catalogue
+    runs-on: ubuntu-latest
+    # The federated credential's subject includes the environment, exactly as for the deploy
+    # job — see docs/operations.md.
+    environment: production
+    # A cold run is about six minutes; this is headroom for a slow day at Kartverket, not an
+    # expectation.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write   # federated credential — no long-lived secret in the repo
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Build the ingestion job
+        run: dotnet build src/Rekfar.Ingest.Peaks --configuration Release --nologo
+
+      # Its own principal, not the deploy one. A job that refreshes reference data has no
+      # business being able to read a diary note (ADR-0015). The grants are in
+      # docs/operations.md.
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_INGEST_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Refresh
+        env:
+          # Authentication comes from the azure/login session above, so no secret and no
+          # token handling here.
+          ConnectionStrings__Rekfar: >-
+            Server=${{ vars.AZURE_SQL_SERVER }};
+            Database=${{ vars.AZURE_SQL_DATABASE }};
+            Authentication=Active Directory Default;
+            Encrypt=True;
+            Connect Timeout=60
+          Ingestion__PeakRuleVersion: ${{ inputs.peakRuleVersion || '1.0' }}
+        run: dotnet run --project src/Rekfar.Ingest.Peaks --configuration Release --no-build
+
+      # The run's own record of what it did is in ingest.Run; this is the human-readable
+      # copy, kept because a scheduled job nobody watches needs somewhere to have said so.
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "### Peak catalogue refresh"
+            echo
+            echo "Outcome: ${{ job.status }}"
+            echo
+            echo 'Check `ingest.Run` for the row counts — a run that succeeded while reading'
+            echo 'far fewer rows than usual is the cheapest signal that parsing has broken.'
+          } >> "$GITHUB_STEP_SUMMARY"

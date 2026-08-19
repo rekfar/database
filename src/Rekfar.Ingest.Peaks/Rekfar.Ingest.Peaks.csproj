@@ -38,6 +38,12 @@
          makes builds non-reproducible and lets an upstream release break main. Bump by hand
          after reading the changelog. -->
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
+    <!-- The Entra ID authentication providers, which SqlClient 7 moved out of the driver and
+         into this package. Nothing here references it in code: the connection string asks for
+         Active Directory Default, and SqlClient finds the provider by loading this assembly by
+         name at that point. Remove the reference and the job builds clean and fails at connect
+         time, so keep the version in step with Microsoft.Data.SqlClient above. -->
+    <PackageReference Include="Microsoft.Data.SqlClient.Extensions.Azure" Version="7.0.2" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
   </ItemGroup>
 

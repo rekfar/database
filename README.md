@@ -55,8 +55,10 @@ collation, publishes the current schema, and runs the smoke tests.
 | Command | Purpose |
 | --- | --- |
 | `dotnet build src/Rekfar.Database` | Build the `.dacpac`; fails on any T-SQL warning |
+| `dotnet build src/Rekfar.Ingest.Peaks` | Build the peak import; fails on any C# warning |
 | `local/reset.sh` | Rebuild the local database from scratch |
 | `local/reset.sh --smoke` | …and run `tests/smoke.sql` against it |
+| `dotnet run --project src/Rekfar.Ingest.Peaks` | Run the peak import against it |
 | `docker compose -f local/docker-compose.yml down -v` | Remove the local database entirely |
 
 On Apple Silicon the SQL Server image runs under x86-64 emulation — Microsoft publishes
@@ -69,12 +71,21 @@ behaves the same.
 src/Rekfar.Database/        The schema — one file per object
   Schemas/                  auth, app, ref, ingest
   Tables/<schema>/
-  Scripts/PostDeployment/   Idempotent seed data (code lists, provenance)
+  Scripts/PostDeployment/   Idempotent seed data (code lists, provenance, the peak rule)
+  Programmability/<schema>/ Stored procedures — currently the peak merge
+src/Rekfar.Ingest.Peaks/    The Kartverket peak import (ADR-0015)
 publish/                    Publish profiles — behaviour only, no credentials
 local/                      Docker Compose + reset script
 tests/smoke.sql             Invariants the schema must guarantee
-docs/                       Conventions, data model, operations
+docs/                       Conventions, data model, operations, the peak rule
 ```
+
+This repository also holds the **reference-data ingestion job**, which is a wider
+responsibility than "the schema" and is recorded as such in
+[ADR-0015](https://github.com/rekfar/docs/blob/main/adr/0015-ingestion-lives-in-the-database-repository.md).
+The short version: what ingestion consumes is the schema rather than the domain, so the
+schema and its only writer change together. See
+[src/Rekfar.Ingest.Peaks/README.md](src/Rekfar.Ingest.Peaks/README.md).
 
 Four schemas, mirroring the split in the
 [data architecture](https://github.com/rekfar/docs/blob/main/architecture/03-data-architecture.md):
@@ -109,8 +120,12 @@ casually: `BlockOnPossibleDataLoss` stops any deploy that would discard data, an
 `DropObjectsNotInSource` is off, so removing an object from the project produces a line in
 the deploy report to review rather than a `DROP` on the next push.
 
-Azure authentication uses a **federated credential** (OIDC), so there is no long-lived
-secret in the repository. Setup steps, along with backup and restore, are in
+`.github/workflows/ingest-peaks.yml` is separate, and runs on a clock rather than on a
+commit: it refreshes the Kartverket peak catalogue monthly, as its own least-privileged
+principal with no rights on `app` or `auth`.
+
+Azure authentication uses a **federated credential** (OIDC) for both, so there is no
+long-lived secret in the repository. Setup steps, along with backup and restore, are in
 [docs/operations.md](docs/operations.md).
 
 ### Required repository configuration
@@ -127,6 +142,7 @@ Secrets, under _Secrets_:
 | Secret | Where it comes from |
 | --- | --- |
 | `AZURE_CLIENT_ID` | The Entra app registration used for deployment |
+| `AZURE_INGEST_CLIENT_ID` | The Entra app registration used by the peak refresh |
 | `AZURE_TENANT_ID` | Entra tenant |
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription |
 
@@ -137,7 +153,10 @@ Secrets, under _Secrets_:
 - [docs/conventions.md](docs/conventions.md) — naming, types, keys, code values, and the
   contract with the backend.
 - [docs/operations.md](docs/operations.md) — creating the Azure database, deploy
-  authentication, backups, restore, GDPR deletion, reference-data rebuild.
+  authentication, the scheduled peak refresh, backups, restore, GDPR deletion,
+  reference-data rebuild.
+- [docs/peak-rule.md](docs/peak-rule.md) — which SSR places become peaks, why, and how to
+  supersede the rule.
 
 Architecture, requirements and decisions live in the
 [docs repository](https://github.com/rekfar/docs).

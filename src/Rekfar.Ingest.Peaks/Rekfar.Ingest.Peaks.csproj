@@ -42,6 +42,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The types here are internal because nothing outside this program consumes them;
+         the tests are part of this program, not a consumer of it. -->
+    <InternalsVisibleTo Include="Rekfar.Ingest.Peaks.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

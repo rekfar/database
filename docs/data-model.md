@@ -212,14 +212,15 @@ One thing is also deliberately absent from the current model:
 
 ## Volumes
 
-Measured against the published extract on 2026-08-16, not estimated:
+Measured by parsing the published extract, not estimated. Place and point counts
+are from the 2026-08-14 whole-country extract:
 
 | Table | Expected | Notes |
 | --- | --- | --- |
 | `ref.Peak` | ~30k rows or fewer | The extract holds 1,059,349 places; 175,109 are in the `høyder` group, of which `fjell` (25,382) and `topp` (4,566) are the staged candidates. The elevation floor in rule 1.0 takes it down from there |
 | `ingest.SsrPlace` | ~30k rows per retained run | One snapshot per run; old runs are pruned by deleting their `ingest.Run` row |
-| `ingest.SsrPlacePoint` | ~66k rows per retained run | Averages 2.2 points per place — 14,357 of the candidates carry a MultiPoint of 2–16 positions |
-| `ingest.ElevationSample` | ~66k rows, growing slowly | Keyed by coordinate, never pruned with a run |
+| `ingest.SsrPlacePoint` | ~58k rows per retained run | 57,731 measured — 14,357 of the candidates carry a MultiPoint of 2–16 positions, so the average is 1.9 points per place |
+| `ingest.ElevationSample` | ~58k rows, growing slowly | Keyed by coordinate, never pruned with a run |
 | `ref.Area` | ~400 kommuner + curated regions | Boundary geometry dominates the size once loaded |
 | `app.Trip` | Hundreds per user | A personal logbook |
 

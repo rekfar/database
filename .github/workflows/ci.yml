@@ -44,6 +44,12 @@ jobs:
       - name: Build the ingestion job
         run: dotnet build src/Rekfar.Ingest.Peaks --configuration Release --nologo
 
+      # No network and no database: the parser fixture is a real extract trimmed to the cases
+      # that matter. The test that reads a whole national extract skips itself unless
+      # REKFAR_SSR_EXTRACT points at one, so CI does not download 138 MB on every push.
+      - name: Test the ingestion job
+        run: dotnet test tests/Rekfar.Ingest.Peaks.Tests --configuration Release --nologo
+
       - uses: actions/upload-artifact@v7
         with:
           name: dacpac

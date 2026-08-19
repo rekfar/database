@@ -9,9 +9,9 @@ rather than the domain — see
 for the reasoning and for the named trigger to revisit it. Which SSR product it reads, and
 why, is [ADR-0016](https://github.com/rekfar/docs/blob/main/adr/0016-ssr-general-use-distribution.md).
 
-> **Status: skeleton.** Configuration, structured logging, the run record and the schema
-> preflight are in place. None of the ingestion stages are implemented yet, so a run
-> currently opens `ingest.Run`, does nothing, and closes it as succeeded with zero counts.
+> **Status: parsing.** Configuration, structured logging, the run record, the schema
+> preflight and the GML parser are in place. The parser is not yet wired into a run, so
+> running the job still opens `ingest.Run`, does nothing, and closes it with zero counts.
 
 ## Running it
 
@@ -69,6 +69,64 @@ One JSON object per line, on stdout. Every line emitted after the run opens carr
 dotnet run --project src/Rekfar.Ingest.Peaks | jq -r '"\(.LogLevel)\t\(.Message)"'
 ```
 
+## Reading the extract
+
+`SsrGmlReader` streams places out of the whole-country GML — 2.5 GB of XML, read one feature
+at a time and never held as a document. Parsing the national extract takes about 18 seconds
+and ends with a live heap of 2 MB.
+
+Two things it checks rather than assumes, because both fail silently otherwise:
+
+- **The product specification**, read from the root element's namespace rather than from
+  configuration, so an upstream change announces itself in the file being parsed. It is what
+  gets recorded as the run's source version.
+- **The coordinate reference system.** Kartverket publishes the same data in UTM projections
+  under names differing by four characters, and the wrong file parses perfectly into wholly
+  wrong coordinates. Anything but EPSG:4258 is refused.
+
+Coordinates are read latitude-first, because `urn:ogc:def:crs:EPSG::4258` declares north-east
+axis order, and as `decimal` rather than `double` — the value is the key into the elevation
+cache, and two runs that rounded it differently would miss each other's entries.
+
+## Which name a peak gets
+
+A place carries up to five names across Norwegian, three Sami languages and Kvensk, each with
+one or more spellings. `PlaceNameSelector` picks one — this is the rule ADR-0016 left open.
+
+1. **Name status:** `hovednavn`, then `sidenavn`, `undernavn`, `historisk`.
+2. **The place's own `språkprioritering`.** Each place publishes its own language ordering,
+   and the earlier a language appears, the stronger its claim.
+3. **Lowest `stedsnavnnummer`** — SSR's own ordering within a place.
+
+Then, within the chosen name, the spelling: by `skrivemåtestatus` (`vedtatt` above `godkjent`,
+anything settled above what is merely proposed or historical), then lowest `skrivemåtenummer`.
+
+Step 2 is the one worth understanding. It is deliberately **not** a fixed preference for
+Norwegian: 1,562 peaks in the extract rank a Sami language first, and Kartverket's own
+ordering is a better authority on which name belongs to a place than a blanket rule would be.
+*Rihkedetjahke* is a South Sami peak that a Norwegian-first parser would silently rename to
+*Skjækerskaftet*. Document order is never used either — the extract contains places whose
+first-listed name is the one the rule rejects.
+
+## Tests
+
+```bash
+dotnet test tests/Rekfar.Ingest.Peaks.Tests
+```
+
+No network, no database. The fixture is nine real features taken verbatim from the national
+extract, each present because it isolates one decision: a single point, a multipoint, a place
+where status decides the name, one where language decides it, one where the numbering breaks a
+tie, a place with no geometry at all, and a road that must be filtered out.
+
+One test reads a whole national extract and is skipped unless you point it at one:
+
+```bash
+REKFAR_SSR_EXTRACT=/path/to/Basisdata_0000_Norge_4258_Stedsnavn_GML.gml dotnet test tests/Rekfar.Ingest.Peaks.Tests
+```
+
+It asserts what a 30 KB fixture cannot: that memory stays flat across a million features.
+
 ## Layout
 
 ```
@@ -76,4 +134,7 @@ Program.cs                  Wiring, the stage sequence, and exit codes
 Database/IngestRun.cs       One row in ingest.Run, from running to a terminal status
 Database/SchemaPreflight.cs Fails fast when the database is not the one this build expects
 Database/SourceDataset.cs   The dataset ids fixed by the post-deployment seed
+Ssr/SsrGmlReader.cs         Streams places out of the GML extract
+Ssr/PlaceNameSelector.cs    Chooses the one name a place is displayed under
+Ssr/SsrPlace.cs             A parsed place, matching ingest.SsrPlace
 ```

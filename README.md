@@ -71,12 +71,13 @@ behaves the same.
 src/Rekfar.Database/        The schema — one file per object
   Schemas/                  auth, app, ref, ingest
   Tables/<schema>/
-  Scripts/PostDeployment/   Idempotent seed data (code lists, provenance)
+  Scripts/PostDeployment/   Idempotent seed data (code lists, provenance, the peak rule)
+  Programmability/<schema>/ Stored procedures — currently the peak merge
 src/Rekfar.Ingest.Peaks/    The Kartverket peak import (ADR-0015)
 publish/                    Publish profiles — behaviour only, no credentials
 local/                      Docker Compose + reset script
 tests/smoke.sql             Invariants the schema must guarantee
-docs/                       Conventions, data model, operations
+docs/                       Conventions, data model, operations, the peak rule
 ```
 
 This repository also holds the **reference-data ingestion job**, which is a wider

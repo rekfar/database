@@ -30,6 +30,12 @@ internal sealed class IngestionOptions
     /// </remarks>
     public string NavneobjektTypes { get; init; } = "fjell,topp";
 
+    /// <summary>
+    /// Which peak rule version to merge under. It must already be seeded — the rule is data
+    /// with a documented rationale, not something the job invents (FR-REF-11).
+    /// </summary>
+    public string PeakRuleVersion { get; init; } = "1.0";
+
     /// <summary>Base address of the Kartverket Høydedata point service.</summary>
     public string HoydedataBaseUrl { get; init; } = "https://ws.geonorge.no/hoydedata/v1/";
 

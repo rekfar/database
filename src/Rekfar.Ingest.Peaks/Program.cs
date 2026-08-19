@@ -63,6 +63,7 @@ var options = new IngestionOptions
     ExtractPath = builder.Configuration["Ingestion:ExtractPath"],
     NavneobjektTypes = builder.Configuration["Ingestion:NavneobjektTypes"] ?? new IngestionOptions().NavneobjektTypes,
     HoydedataBaseUrl = builder.Configuration["Ingestion:HoydedataBaseUrl"] ?? new IngestionOptions().HoydedataBaseUrl,
+    PeakRuleVersion = builder.Configuration["Ingestion:PeakRuleVersion"] ?? new IngestionOptions().PeakRuleVersion,
     ElevationConcurrency = int.TryParse(builder.Configuration["Ingestion:ElevationConcurrency"], out var concurrency)
         ? concurrency
         : new IngestionOptions().ElevationConcurrency,
@@ -100,8 +101,8 @@ try
 
     try
     {
-        // Remaining stages, in the order set out in the import plan: sample elevations, apply
-        // the peak rule, merge into ref.Peak, resolve areas.
+        // Download, parse and stage, sample elevations, then apply the rule and merge. Only
+        // the download is still missing; the extract is supplied rather than fetched.
         using var extract = SsrExtractFile.Open(extractPath);
         logger.LogInformation("Reading {Extract}.", extract.Name);
 
@@ -153,6 +154,14 @@ try
             options.ElevationConcurrency);
 
         var elevations = await sampler.SampleAsync(connection, run.Id, cancellation.Token).ConfigureAwait(false);
+
+        var merged = await new PeakMerger(loggerFactory.CreateLogger<PeakMerger>())
+            .MergeAsync(connection, run.Id, options.PeakRuleVersion, cancellation.Token)
+            .ConfigureAwait(false);
+
+        run.Counts.Inserted = merged.Inserted;
+        run.Counts.Updated = merged.Updated;
+        run.Counts.Retired = merged.Retired;
 
         var scopeNote = staged.SkippedOutOfScope > 0
             ? $" Skipped {staged.SkippedOutOfScope} outside mainland Norway."

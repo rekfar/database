@@ -9,9 +9,9 @@ rather than the domain — see
 for the reasoning and for the named trigger to revisit it. Which SSR product it reads, and
 why, is [ADR-0016](https://github.com/rekfar/docs/blob/main/adr/0016-ssr-general-use-distribution.md).
 
-> **Status: staging and sampling.** The job reads an SSR extract, stages it, and fills the
-> elevation cache. What remains is applying the peak rule and merging into `ref.Peak`, so
-> nothing reaches the catalogue yet.
+> **Status: complete but not scheduled.** The job reads an SSR extract, stages it, fills the
+> elevation cache, applies the peak rule and merges the result into `ref.Peak`. What remains
+> is fetching the extract rather than being handed it, and running on a schedule.
 
 ## Running it
 
@@ -132,6 +132,38 @@ Elevations are sampled for everything staged, not only for what the peak rule wi
 cache outlives the rule, and a later, wider rule should not have to go back to the service for
 points an earlier run already had in hand.
 
+## Merging into the catalogue
+
+The merge is `ingest.MergePeaks`, a stored procedure in the schema project rather than SQL
+embedded here — so it is reviewable as a schema diff, deployed with the tables it depends on,
+and exercised by `tests/smoke.sql`.
+
+It applies the rule from `ref.PeakRule` to the run's snapshot, and for each place takes its
+**highest sampled point**, which supplies the elevation and the position together: they are
+one decision, because SSR does not say which of a place's points is the summit. Answers from
+a bathymetric source are ignored.
+
+Matching is on `(SourceDatasetId, ExternalId)` — the `stedsnummer` — which is what makes a
+refresh an update rather than a duplicate, and what lets a peak an earlier rule retired come
+back rather than being inserted twice.
+
+**Rows are retired, never deleted.** Anything the current rule no longer admits gets
+`IsActive = 0` and a `RetiredAt`, because somebody may have logged a trip to it and
+`app.TripPeak`'s foreign key deliberately refuses to cascade.
+
+Areas come from the extract's `kommunenummer` attribute, so `ref.PeakArea` is copied rather
+than derived — no polygon containment and no boundary geometry. A national run resolves 304
+kommuner and 28,870 memberships; the handful of peaks left without one are the places SSR
+gives no kommune, near the Finnish border.
+
+A full run against a warm cache takes about 25 seconds and reports what it changed:
+
+```
+Catalogue merged under rule 1.0: 28876 inserted, 0 updated, 0 retired.
+```
+
+Re-running an unchanged snapshot reports `0 inserted, 0 updated, 0 retired`.
+
 ## Configuration
 
 | Setting | Default | Notes |
@@ -139,6 +171,7 @@ points an earlier run already had in hand.
 | `ConnectionStrings__Rekfar` | — | Required. Never in a file in this repository |
 | `Ingestion__ExtractPath` | — | Required for now: the SSR `.zip` or `.gml` |
 | `Ingestion__NavneobjektTypes` | `fjell,topp` | Widening the rule is a setting, not a code change |
+| `Ingestion__PeakRuleVersion` | `1.0` | Must already be seeded — see [peak-rule.md](../../docs/peak-rule.md) |
 | `Ingestion__HoydedataBaseUrl` | `https://ws.geonorge.no/hoydedata/v1/` | |
 | `Ingestion__ElevationConcurrency` | `4` | Kept small on purpose — a free public service, a monthly job |
 
@@ -192,4 +225,7 @@ Database/ElevationSampleStore.cs  Reads and writes the elevation cache
 Hoydedata/HoydedataClient.cs      One batched request to the point service
 Hoydedata/RetryHandler.cs         Backs off and retries what is worth retrying
 Hoydedata/ElevationSampler.cs     Fills the cache for a run, in resumable waves
+Database/PeakMerger.cs            Calls ingest.MergePeaks and reports what changed
 ```
+
+The merge itself is `src/Rekfar.Database/Programmability/ingest/MergePeaks.sql`.

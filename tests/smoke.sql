@@ -14,6 +14,7 @@
         * Staged coordinates cannot be transposed (the EPSG:4258 axis-order trap).
         * The peak rule is seeded, and a peak can only cite a rule that exists.
         * Pruning an ingestion run takes its staging snapshot with it.
+        * The merge admits what the rule admits, and retires rather than deletes.
 
     Run against a scratch database only. Everything happens in one transaction that is
     rolled back, and the guard below refuses to run if the database holds any accounts.
@@ -43,6 +44,8 @@ DECLARE @userId uniqueidentifier = '11111111-1111-1111-1111-111111111111';
 DECLARE @tripId uniqueidentifier = '22222222-2222-2222-2222-222222222222';
 DECLARE @peakId bigint;
 DECLARE @runId bigint;
+DECLARE @mergeRunId bigint;
+DECLARE @inserted int, @updated int, @retired int;
 
 BEGIN TRY
     BEGIN TRANSACTION;
@@ -283,6 +286,14 @@ BEGIN TRY
     END CATCH
     IF @failed = 0 THROW 50041, 'A cached elevation was accepted without its datakilde.', 1;
 
+    -- The cache is keyed by coordinate and deliberately outlives runs, so on a database that
+    -- has really been imported into these coordinates already exist. Clearing them inside the
+    -- transaction keeps the fixture independent of whatever else is in the cache; the rollback
+    -- puts the real rows back.
+    DELETE FROM ingest.ElevationSample
+    WHERE (Latitude = 61.636440 AND Longitude = 8.312477)
+       OR (Latitude = 61.640680 AND Longitude = 8.306035);
+
     -- "Asked, and there was no height here" is a real answer and must be cacheable, or
     -- every run re-asks the same uncovered points.
     INSERT INTO ingest.ElevationSample (Latitude, Longitude, ElevationMeters, Datakilde, Terreng)
@@ -302,6 +313,91 @@ BEGIN TRY
     SELECT @count = COUNT(*) FROM ingest.ElevationSample WHERE Latitude = 61.636440 AND Longitude = 8.312477;
     IF @count <> 1 THROW 50043, 'Pruning a run destroyed the elevation cache.', 1;
 
+    /* ---------- the merge into the catalogue (ingest.MergePeaks) ---------- */
+
+    -- Exercised here because the procedure joins temp tables to real ones, and a temp table
+    -- carries tempdb's collation rather than this database's. That mismatch is invisible in a
+    -- build and fatal at run time, so it needs a test that actually executes the merge.
+
+    INSERT INTO ingest.[Run] (SourceDatasetId) VALUES (1);
+    SET @mergeRunId = SCOPE_IDENTITY();
+
+    INSERT INTO ingest.SsrPlace (RunId, Stedsnummer, [Name], NavneobjektType, NavneobjektGruppe, Kommunenummer, Kommunenavn, PointCount)
+    VALUES (@mergeRunId, 'smoke-high', N'Smoketoppen',  N'fjell', N'høyder', '9999', N'Smokekommune', 2),
+           (@mergeRunId, 'smoke-low',  N'Smokehaugen',  N'fjell', N'høyder', '9999', N'Smokekommune', 1),
+           (@mergeRunId, 'smoke-sea',  N'Smokeskjeret', N'fjell', N'høyder', '9999', N'Smokekommune', 1);
+
+    INSERT INTO ingest.SsrPlacePoint (RunId, Stedsnummer, PointIndex, Latitude, Longitude)
+    VALUES (@mergeRunId, 'smoke-high', 0, 61.500000, 8.500000),
+           (@mergeRunId, 'smoke-high', 1, 61.510000, 8.510000),
+           (@mergeRunId, 'smoke-low',  0, 61.520000, 8.520000),
+           (@mergeRunId, 'smoke-sea',  0, 61.530000, 8.530000);
+
+    DELETE FROM ingest.ElevationSample
+    WHERE Latitude IN (61.500000, 61.510000, 61.520000, 61.530000)
+      AND Longitude IN (8.500000, 8.510000, 8.520000, 8.530000);
+
+    INSERT INTO ingest.ElevationSample (Latitude, Longitude, ElevationMeters, Datakilde)
+    VALUES (61.500000, 8.500000, 1000.00, 'dtm1'),          -- the lower of two points
+           (61.510000, 8.510000, 1500.00, 'dtm1'),          -- the summit: highest wins
+           (61.520000, 8.520000,   50.00, 'dtm1'),          -- below the rule's floor
+           (61.530000, 8.530000, -246.00, 'dybdekurver');   -- a depth, not a height
+
+    EXEC ingest.MergePeaks
+        @RunId = @mergeRunId, @PeakRuleVersion = '1.0',
+        @RowsInserted = @inserted OUTPUT, @RowsUpdated = @updated OUTPUT, @RowsRetired = @retired OUTPUT;
+
+    IF @inserted <> 1 THROW 50050, 'The merge should have admitted exactly the one qualifying place.', 1;
+
+    SELECT @count = COUNT(*) FROM [ref].Peak
+    WHERE SourceDatasetId = 1 AND ExternalId = 'smoke-high' AND ElevationMeters = 1500 AND IsActive = 1;
+    IF @count <> 1 THROW 50051, 'A place must take the elevation of its highest sampled point.', 1;
+
+    -- The highest point supplies the position as well as the height; they are one decision.
+    SELECT @count = COUNT(*) FROM [ref].Peak
+    WHERE ExternalId = 'smoke-high' AND ROUND([Location].Lat, 2) = 61.51 AND ROUND([Location].Long, 2) = 8.51;
+    IF @count <> 1 THROW 50052, 'A peak must sit at its highest sampled point, not its first.', 1;
+
+    SELECT @count = COUNT(*) FROM [ref].Peak WHERE ExternalId = 'smoke-low';
+    IF @count <> 0 THROW 50053, 'A place below the rule''s elevation floor was admitted.', 1;
+
+    -- Nine points in the national extract answer from a bathymetric source because their
+    -- representation point sits just offshore. Taken at face value they would enter the
+    -- catalogue hundreds of metres below sea level.
+    SELECT @count = COUNT(*) FROM [ref].Peak WHERE ExternalId = 'smoke-sea';
+    IF @count <> 0 THROW 50054, 'A bathymetric depth was accepted as an elevation.', 1;
+
+    /* ---------- areas resolved from the attribute, with no spatial join ---------- */
+
+    SELECT @count = COUNT(*) FROM [ref].Area WHERE [Kind] = 'kommune' AND ExternalId = '9999' AND SourceDatasetId = 1;
+    IF @count <> 1 THROW 50055, 'The merge did not create the kommune it read from the extract.', 1;
+
+    SELECT @count = COUNT(*)
+    FROM [ref].PeakArea pa
+    JOIN [ref].Peak p ON p.Id = pa.PeakId AND p.ExternalId = 'smoke-high'
+    JOIN [ref].Area a ON a.Id = pa.AreaId AND a.ExternalId = '9999';
+    IF @count <> 1 THROW 50056, 'The peak was not linked to its kommune.', 1;
+
+    /* ---------- a refresh retires what it no longer admits, and never deletes ---------- */
+
+    -- The fixture peak is not in this run's snapshot, so the merge must retire it — while the
+    -- trip that logged it survives untouched. This is the invariant the whole retire-never-
+    -- delete design exists for, tested end to end rather than by hand.
+    SELECT @count = COUNT(*) FROM [ref].Peak WHERE Id = @peakId AND IsActive = 0 AND RetiredAt IS NOT NULL;
+    IF @count <> 1 THROW 50057, 'A peak absent from the refresh was not retired.', 1;
+
+    SELECT @count = COUNT(*) FROM app.TripPeak WHERE PeakId = @peakId;
+    IF @count <> 1 THROW 50058, 'Retiring a peak destroyed the trip that logged it.', 1;
+
+    /* ---------- merging the same snapshot again changes nothing ---------- */
+
+    EXEC ingest.MergePeaks
+        @RunId = @mergeRunId, @PeakRuleVersion = '1.0',
+        @RowsInserted = @inserted OUTPUT, @RowsUpdated = @updated OUTPUT, @RowsRetired = @retired OUTPUT;
+
+    IF @inserted <> 0 OR @updated <> 0 OR @retired <> 0
+        THROW 50059, 'Re-merging an unchanged snapshot reported work it did not need to do.', 1;
+
     /* ---------- FR-ACC-5: deleting the account removes everything ---------- */
 
     DELETE FROM auth.[User] WHERE Id = @userId;
@@ -315,6 +411,21 @@ BEGIN TRY
     /* Reference data must be untouched by an account deletion. */
     SELECT @count = COUNT(*) FROM [ref].Peak WHERE Id = @peakId;
     IF @count <> 1 THROW 50031, 'Deleting an account removed reference data.', 1;
+
+    /* ---------- a rule version that does not exist is refused ---------- */
+
+    -- Deliberately last. ingest.MergePeaks runs with XACT_ABORT ON — correct when it owns its
+    -- own transaction, but it dooms this one, so no assertion may read anything after it.
+    SET @failed = 0;
+    BEGIN TRY
+        EXEC ingest.MergePeaks
+            @RunId = @mergeRunId, @PeakRuleVersion = '99.9',
+            @RowsInserted = @inserted OUTPUT, @RowsUpdated = @updated OUTPUT, @RowsRetired = @retired OUTPUT;
+    END TRY
+    BEGIN CATCH
+        SET @failed = 1;
+    END CATCH
+    IF @failed = 0 THROW 50060, 'The merge ran under a peak rule version that is not seeded.', 1;
 
     ROLLBACK TRANSACTION;
     PRINT 'Smoke tests passed.';

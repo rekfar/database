@@ -30,6 +30,24 @@ internal sealed class IngestionOptions
     /// </remarks>
     public string NavneobjektTypes { get; init; } = "fjell,topp";
 
+    /// <summary>Base address of the Kartverket Høydedata point service.</summary>
+    public string HoydedataBaseUrl { get; init; } = "https://ws.geonorge.no/hoydedata/v1/";
+
+    /// <summary>
+    /// Coordinates per elevation request. The service refuses more than 50, and since latency
+    /// dominates its own cost, fewer would only mean more round trips.
+    /// </summary>
+    public int ElevationBatchSize { get; init; } = 50;
+
+    /// <summary>
+    /// Elevation requests in flight at once. Deliberately small: this is a free public
+    /// service, the job runs monthly, and the whole extract is about 1,150 requests.
+    /// </summary>
+    public int ElevationConcurrency { get; init; } = 4;
+
+    /// <summary>Attempts per elevation request before the run gives up.</summary>
+    public int ElevationMaxAttempts { get; init; } = 5;
+
     public string[] ParseNavneobjektTypes()
         => NavneobjektTypes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 }

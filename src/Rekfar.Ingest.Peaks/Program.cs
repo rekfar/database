@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Rekfar.Ingest.Peaks;
 using Rekfar.Ingest.Peaks.Database;
+using Rekfar.Ingest.Peaks.Hoydedata;
 using Rekfar.Ingest.Peaks.Ssr;
 
 // The Kartverket peak import (ADR-0015, ADR-0016).
@@ -61,6 +62,10 @@ var options = new IngestionOptions
 {
     ExtractPath = builder.Configuration["Ingestion:ExtractPath"],
     NavneobjektTypes = builder.Configuration["Ingestion:NavneobjektTypes"] ?? new IngestionOptions().NavneobjektTypes,
+    HoydedataBaseUrl = builder.Configuration["Ingestion:HoydedataBaseUrl"] ?? new IngestionOptions().HoydedataBaseUrl,
+    ElevationConcurrency = int.TryParse(builder.Configuration["Ingestion:ElevationConcurrency"], out var concurrency)
+        ? concurrency
+        : new IngestionOptions().ElevationConcurrency,
 };
 
 var extractPath = options.ExtractPath;
@@ -122,12 +127,40 @@ try
                 reader.PlacesWithoutGeometry);
         }
 
+        // Elevation is sampled for everything staged, not only for what the peak rule will
+        // eventually admit: the cache outlives the rule, and a later, wider rule should not
+        // have to go back to the service for points this run already had in hand.
+        // Not disposed here: HttpClient owns the handler chain and disposes it.
+        var httpHandler = new RetryHandler(loggerFactory.CreateLogger<RetryHandler>(), options.ElevationMaxAttempts)
+        {
+            InnerHandler = new HttpClientHandler(),
+        };
+
+        using var httpClient = new HttpClient(httpHandler)
+        {
+            BaseAddress = new Uri(options.HoydedataBaseUrl),
+            Timeout = TimeSpan.FromSeconds(60),
+        };
+
+        // Identify the caller on a free public service, so Kartverket can see who is asking
+        // and has somewhere to look if this job ever misbehaves.
+        httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Rekfar-Ingest-Peaks/0.1 (+https://github.com/rekfar/database)");
+
+        var sampler = new ElevationSampler(
+            new HoydedataClient(httpClient, loggerFactory.CreateLogger<HoydedataClient>()),
+            loggerFactory.CreateLogger<ElevationSampler>(),
+            options.ElevationBatchSize,
+            options.ElevationConcurrency);
+
+        var elevations = await sampler.SampleAsync(connection, run.Id, cancellation.Token).ConfigureAwait(false);
+
         var scopeNote = staged.SkippedOutOfScope > 0
             ? $" Skipped {staged.SkippedOutOfScope} outside mainland Norway."
             : string.Empty;
 
         await run.SucceedAsync(
-            $"Staged {staged.Places} places and {staged.Points} points from {reader.FeaturesRead} features.{scopeNote}")
+            $"Staged {staged.Places} places and {staged.Points} points from {reader.FeaturesRead} features.{scopeNote} "
+            + $"Sampled {elevations.NewlySampled} new elevations over {elevations.DistinctPoints} distinct points.")
             .ConfigureAwait(false);
     }
     catch (Exception ex)

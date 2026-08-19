@@ -9,9 +9,9 @@ rather than the domain — see
 for the reasoning and for the named trigger to revisit it. Which SSR product it reads, and
 why, is [ADR-0016](https://github.com/rekfar/docs/blob/main/adr/0016-ssr-general-use-distribution.md).
 
-> **Status: parsing.** Configuration, structured logging, the run record, the schema
-> preflight and the GML parser are in place. The parser is not yet wired into a run, so
-> running the job still opens `ingest.Run`, does nothing, and closes it with zero counts.
+> **Status: staging and sampling.** The job reads an SSR extract, stages it, and fills the
+> elevation cache. What remains is applying the peak rule and merging into `ref.Peak`, so
+> nothing reaches the catalogue yet.
 
 ## Running it
 
@@ -108,6 +108,40 @@ ordering is a better authority on which name belongs to a place than a blanket r
 *Skjækerskaftet*. Document order is never used either — the extract contains places whose
 first-listed name is the one the rule rejects.
 
+## Sampling elevations
+
+SSR carries no heights, so every point costs a call to Kartverket Høydedata (FR-REF-10). The
+service takes up to 50 coordinates per request and answers in about a second once warm, so
+latency dominates: batching turns 57,664 points into roughly 1,150 requests.
+
+**The coordinate order is the opposite of the extract's.** The GML publishes latitude first;
+this service takes each pair as `[øst, nord]` — longitude first. Reversed, it does not fail,
+it answers `null` for every point on land, which is indistinguishable from missing coverage.
+
+The service answers in request order and echoes each coordinate back. The client relies on the
+order but **verifies** it against the echo, because a shifted response would give every peak
+its neighbour's elevation and nothing downstream could tell.
+
+Sampling is resumable. Every wave of requests is cached before the next is issued, so a run
+that dies partway leaves its progress behind and the next one asks only about what is still
+missing. That is also why the cache is keyed by coordinate rather than by run: a re-run, a
+widened peak rule, or a resumed run all hit rows that already exist. Points the model has no
+height for are cached as nulls, so they are not asked about again.
+
+Elevations are sampled for everything staged, not only for what the peak rule will admit — the
+cache outlives the rule, and a later, wider rule should not have to go back to the service for
+points an earlier run already had in hand.
+
+## Configuration
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `ConnectionStrings__Rekfar` | — | Required. Never in a file in this repository |
+| `Ingestion__ExtractPath` | — | Required for now: the SSR `.zip` or `.gml` |
+| `Ingestion__NavneobjektTypes` | `fjell,topp` | Widening the rule is a setting, not a code change |
+| `Ingestion__HoydedataBaseUrl` | `https://ws.geonorge.no/hoydedata/v1/` | |
+| `Ingestion__ElevationConcurrency` | `4` | Kept small on purpose — a free public service, a monthly job |
+
 ## What is left out
 
 The extract reaches beyond mainland Norway, and a few of its peaks are outside what this
@@ -151,4 +185,11 @@ Database/SourceDataset.cs   The dataset ids fixed by the post-deployment seed
 Ssr/SsrGmlReader.cs         Streams places out of the GML extract
 Ssr/PlaceNameSelector.cs    Chooses the one name a place is displayed under
 Ssr/SsrPlace.cs             A parsed place, matching ingest.SsrPlace
+Ssr/SsrExtractFile.cs       Opens the extract, .zip or .gml
+Ssr/MainlandNorwayBounds.cs The catalogue's extent, and the axis-order guard
+Database/SsrStagingWriter.cs      Bulk-loads places and points into ingest
+Database/ElevationSampleStore.cs  Reads and writes the elevation cache
+Hoydedata/HoydedataClient.cs      One batched request to the point service
+Hoydedata/RetryHandler.cs         Backs off and retries what is worth retrying
+Hoydedata/ElevationSampler.cs     Fills the cache for a run, in resumable waves
 ```

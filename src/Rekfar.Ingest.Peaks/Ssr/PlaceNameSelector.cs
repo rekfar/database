@@ -22,7 +22,7 @@ namespace Rekfar.Ingest.Peaks.Ssr;
 ///     <b>The place's own language priority.</b> Each place publishes a
 ///     <c>språkprioritering</c> such as <c>sørsamisk-lulesamisk-nordsamisk-norsk-kvensk</c>,
 ///     and the earlier a language appears in it, the stronger its claim. This is deliberately
-///     not a fixed preference for Norwegian: 1,562 peaks in the extract rank a Sami language
+///     not a fixed preference for Norwegian: 2,042 peaks in the extract rank a Sami language
 ///     first, and Kartverket's own ordering is a better authority on which name belongs to a
 ///     place than a blanket rule would be. Getting this wrong would rename real mountains.
 ///   </description></item>

@@ -4,14 +4,15 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Rekfar.Ingest.Peaks;
 using Rekfar.Ingest.Peaks.Database;
+using Rekfar.Ingest.Peaks.Ssr;
 
 // The Kartverket peak import (ADR-0015, ADR-0016).
 //
 // A console job: started by a schedule, one pass, then an exit code the workflow reads.
-// The ingestion stages themselves land here one at a time; what exists today is the frame
-// they hang on — configuration, structured logging, the run record, and a preflight check
-// that the target database is the one this build was compiled against.
+// The stages land here one at a time. Today it reads the SSR extract and stages it; what
+// follows is sampling elevations, applying the peak rule, and merging into ref.Peak.
 
 const int ExitSuccess = 0;
 const int ExitFailure = 1;
@@ -56,6 +57,27 @@ if (string.IsNullOrWhiteSpace(connectionString))
     return ExitMisconfigured;
 }
 
+var options = new IngestionOptions
+{
+    ExtractPath = builder.Configuration["Ingestion:ExtractPath"],
+    NavneobjektTypes = builder.Configuration["Ingestion:NavneobjektTypes"] ?? new IngestionOptions().NavneobjektTypes,
+};
+
+var extractPath = options.ExtractPath;
+if (string.IsNullOrWhiteSpace(extractPath))
+{
+    // Until the download stage lands, the extract is supplied rather than fetched.
+    logger.LogCritical(
+        "No extract. Set Ingestion__ExtractPath to a Kartverket SSR .zip or .gml — see src/Rekfar.Ingest.Peaks/README.md.");
+    return ExitMisconfigured;
+}
+
+if (!File.Exists(extractPath))
+{
+    logger.LogCritical("The extract {ExtractPath} does not exist.", extractPath);
+    return ExitMisconfigured;
+}
+
 try
 {
     await using var connection = new SqlConnection(connectionString);
@@ -73,11 +95,40 @@ try
 
     try
     {
-        // Stages land here, in the order set out in the import plan: download, parse and
-        // stage, sample elevations, apply the peak rule, merge, resolve areas.
-        logger.LogWarning("No ingestion stages are implemented yet — this run is a no-op.");
+        // Remaining stages, in the order set out in the import plan: sample elevations, apply
+        // the peak rule, merge into ref.Peak, resolve areas.
+        using var extract = SsrExtractFile.Open(extractPath);
+        logger.LogInformation("Reading {Extract}.", extract.Name);
 
-        await run.SucceedAsync("Skeleton run: no stages implemented.").ConfigureAwait(false);
+        var reader = new SsrGmlReader(options.ParseNavneobjektTypes());
+        var writer = new SsrStagingWriter(loggerFactory.CreateLogger<SsrStagingWriter>());
+
+        var staged = await writer
+            .WriteAsync(connection, run.Id, reader.ReadAsync(extract.Content, cancellation.Token), cancellation.Token)
+            .ConfigureAwait(false);
+
+        // The snapshot's identity, not the run's: which specification was parsed and which
+        // extract of it. Both come from the file, so neither can drift from what was read.
+        run.SourceVersion = $"{reader.ProductSpecVersion} @ {reader.ExtractedAt:yyyy-MM-dd'T'HH:mm:ss'Z'}";
+
+        // RowsRead is what was staged. Inserted, updated and retired describe changes to the
+        // catalogue itself and stay zero until the merge stage exists.
+        run.Counts.Read = staged.Places;
+
+        if (reader.PlacesWithoutGeometry > 0)
+        {
+            logger.LogWarning(
+                "{Count} staged places carry no representation point and cannot be given an elevation.",
+                reader.PlacesWithoutGeometry);
+        }
+
+        var scopeNote = staged.SkippedOutOfScope > 0
+            ? $" Skipped {staged.SkippedOutOfScope} outside mainland Norway."
+            : string.Empty;
+
+        await run.SucceedAsync(
+            $"Staged {staged.Places} places and {staged.Points} points from {reader.FeaturesRead} features.{scopeNote}")
+            .ConfigureAwait(false);
     }
     catch (Exception ex)
     {

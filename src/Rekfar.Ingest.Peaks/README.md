@@ -102,11 +102,25 @@ Then, within the chosen name, the spelling: by `skrivemåtestatus` (`vedtatt` ab
 anything settled above what is merely proposed or historical), then lowest `skrivemåtenummer`.
 
 Step 2 is the one worth understanding. It is deliberately **not** a fixed preference for
-Norwegian: 1,562 peaks in the extract rank a Sami language first, and Kartverket's own
+Norwegian: 2,042 peaks in the extract rank a Sami language first, and Kartverket's own
 ordering is a better authority on which name belongs to a place than a blanket rule would be.
 *Rihkedetjahke* is a South Sami peak that a Norwegian-first parser would silently rename to
 *Skjækerskaftet*. Document order is never used either — the extract contains places whose
 first-listed name is the one the rule rejects.
+
+## What is left out
+
+The extract reaches beyond mainland Norway, and a few of its peaks are outside what this
+catalogue covers (ADR-0002): **Newtontoppen** on Svalbard, and ten East Greenland peaks whose
+Norwegian names SSR still carries from the Erik the Red's Land claim of 1931. They are
+excluded by `MainlandNorwayBounds`, counted, and named in the run log rather than dropped
+silently — a change in that count means either the extract or the bounds have moved.
+
+Those same bounds are the axis-order guard, and they are duplicated in
+`CK_ingest_SsrPlacePoint_Latitude` / `_Longitude`. The filter decides what is offered to the
+database; the constraints are the tripwire for anything that gets past it. Bulk loading passes
+`SqlBulkCopyOptions.CheckConstraints` so that tripwire actually runs — without it `SqlBulkCopy`
+loads straight past every `CHECK` on the table, silently.
 
 ## Tests
 

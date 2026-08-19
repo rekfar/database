@@ -217,9 +217,9 @@ are from the 2026-08-14 whole-country extract:
 
 | Table | Expected | Notes |
 | --- | --- | --- |
-| `ref.Peak` | ~30k rows or fewer | The extract holds 1,059,349 places; 175,109 are in the `høyder` group, of which `fjell` (25,382) and `topp` (4,566) are the staged candidates. The elevation floor in rule 1.0 takes it down from there |
-| `ingest.SsrPlace` | ~30k rows per retained run | One snapshot per run; old runs are pruned by deleting their `ingest.Run` row |
-| `ingest.SsrPlacePoint` | ~58k rows per retained run | 57,731 measured — 14,357 of the candidates carry a MultiPoint of 2–16 positions, so the average is 1.9 points per place |
+| `ref.Peak` | ~30k rows or fewer | The extract holds 1,058,852 places; 175,026 are in the `høyder` group, of which `fjell` (25,375) and `topp` (4,562) are the staged candidates. The elevation floor in rule 1.0 takes it down from there |
+| `ingest.SsrPlace` | 29,926 rows per retained run | The 29,937 candidates less 11 outside mainland Norway — Newtontoppen and ten East Greenland peaks. One snapshot per run; old runs are pruned by deleting their `ingest.Run` row |
+| `ingest.SsrPlacePoint` | 57,720 rows per retained run | 14,357 of the candidates carry a MultiPoint of 2–16 positions, so the average is 1.9 points per place |
 | `ingest.ElevationSample` | ~58k rows, growing slowly | Keyed by coordinate, never pruned with a run |
 | `ref.Area` | ~400 kommuner + curated regions | Boundary geometry dominates the size once loaded |
 | `app.Trip` | Hundreds per user | A personal logbook |

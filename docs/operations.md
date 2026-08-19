@@ -201,6 +201,25 @@ ORDER BY r.StartedAt DESC;
 A run that succeeded while reading far fewer rows than usual is the cheapest available
 signal that an upstream schema or distribution change has broken parsing.
 
+### Runs stuck in `running`
+
+The import closes its own run on every path it controls, including cancellation. A row left
+in `running` therefore means the process died without being able to write — a killed
+container, a lost connection, or a runner that ran out of time. It is not harmful: "last
+successful run" filters on `succeeded` and is unaffected. What it does do is make the next
+run log a warning, because from the database alone a crashed run and a concurrently running
+one look identical.
+
+The import deliberately does **not** clean these up. What the right policy is depends on how
+often it actually happens, and nobody knows that yet. Close them by hand after confirming no
+job is genuinely in flight:
+
+```sql
+UPDATE ingest.[Run]
+SET [Status] = 'failed', CompletedAt = SYSUTCDATETIME(), [Message] = N'Abandoned; closed by hand.'
+WHERE [Status] = 'running' AND StartedAt < DATEADD(hour, -6, SYSUTCDATETIME());
+```
+
 ## Checking for drift
 
 What the deployed database has that the project does not, or vice versa:

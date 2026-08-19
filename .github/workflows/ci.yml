@@ -38,6 +38,12 @@ jobs:
       - name: Build
         run: dotnet build src/Rekfar.Database --configuration Release --nologo
 
+      # The ingestion job (ADR-0015) is built here rather than only when it is scheduled, so
+      # that a schema change which breaks the code that writes to it fails this pull request
+      # instead of the next refresh.
+      - name: Build the ingestion job
+        run: dotnet build src/Rekfar.Ingest.Peaks --configuration Release --nologo
+
       - uses: actions/upload-artifact@v7
         with:
           name: dacpac

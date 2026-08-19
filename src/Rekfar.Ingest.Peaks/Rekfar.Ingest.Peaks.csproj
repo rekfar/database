@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Kartverket peak import (ADR-0015). A console job, not a service: it is started by a
+    schedule, does one pass, and exits with a status the workflow can read.
+
+    It lives in this repository because what it consumes is the schema rather than the
+    domain — see ADR-0015 for the reasoning and for the named trigger to revisit it.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Rekfar.Ingest.Peaks</RootNamespace>
+    <AssemblyName>Rekfar.Ingest.Peaks</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The same posture the .sqlproj takes towards T-SQL warnings: a clean build has none,
+         and a warning here is a real defect rather than noise to scroll past. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisMode>Recommended</AnalysisMode>
+
+    <!--
+      Suppressed by code, with a reason, in the same spirit as SuppressTSqlWarnings in the
+      .sqlproj — not by relaxing TreatWarningsAsErrors.
+
+      CA1848 wants compiled LoggerMessage delegates instead of the ILogger extension methods.
+      That rule exists for hot paths measured in allocations per request. This job logs on the
+      order of twenty lines for an entire run, and the delegates would trade readable call
+      sites for a block of boilerplate that buys nothing measurable here (P7).
+    -->
+    <NoWarn>$(NoWarn);CA1848</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Pinned deliberately, for the same reason CI pins SqlPackage: a floating version
+         makes builds non-reproducible and lets an upstream release break main. Bump by hand
+         after reading the changelog. -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

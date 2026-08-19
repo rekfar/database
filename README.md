@@ -55,8 +55,10 @@ collation, publishes the current schema, and runs the smoke tests.
 | Command | Purpose |
 | --- | --- |
 | `dotnet build src/Rekfar.Database` | Build the `.dacpac`; fails on any T-SQL warning |
+| `dotnet build src/Rekfar.Ingest.Peaks` | Build the peak import; fails on any C# warning |
 | `local/reset.sh` | Rebuild the local database from scratch |
 | `local/reset.sh --smoke` | …and run `tests/smoke.sql` against it |
+| `dotnet run --project src/Rekfar.Ingest.Peaks` | Run the peak import against it |
 | `docker compose -f local/docker-compose.yml down -v` | Remove the local database entirely |
 
 On Apple Silicon the SQL Server image runs under x86-64 emulation — Microsoft publishes
@@ -70,11 +72,19 @@ src/Rekfar.Database/        The schema — one file per object
   Schemas/                  auth, app, ref, ingest
   Tables/<schema>/
   Scripts/PostDeployment/   Idempotent seed data (code lists, provenance)
+src/Rekfar.Ingest.Peaks/    The Kartverket peak import (ADR-0015)
 publish/                    Publish profiles — behaviour only, no credentials
 local/                      Docker Compose + reset script
 tests/smoke.sql             Invariants the schema must guarantee
 docs/                       Conventions, data model, operations
 ```
+
+This repository also holds the **reference-data ingestion job**, which is a wider
+responsibility than "the schema" and is recorded as such in
+[ADR-0015](https://github.com/rekfar/docs/blob/main/adr/0015-ingestion-lives-in-the-database-repository.md).
+The short version: what ingestion consumes is the schema rather than the domain, so the
+schema and its only writer change together. See
+[src/Rekfar.Ingest.Peaks/README.md](src/Rekfar.Ingest.Peaks/README.md).
 
 Four schemas, mirroring the split in the
 [data architecture](https://github.com/rekfar/docs/blob/main/architecture/03-data-architecture.md):

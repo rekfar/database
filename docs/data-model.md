@@ -27,7 +27,9 @@ erDiagram
     AUTH_USER {
         uniqueidentifier Id PK
         nvarchar NormalizedEmail UK
-        nvarchar PasswordHash
+        bit EmailConfirmed
+        nvarchar SecurityStamp "sign-in codes derive from it"
+        nvarchar PasswordHash "always NULL — no passwords"
     }
     APP_USER {
         uniqueidentifier Id PK "= auth.User.Id"
@@ -111,7 +113,7 @@ erDiagram
 
 | Table | Purpose | Traces to |
 | --- | --- | --- |
-| `auth.User` | Credentials, Identity-compatible | FR-ACC-1/2/6, ADR-0010 T9 |
+| `auth.User` | The account — Identity-compatible, and holding no password | FR-ACC-1/2, ADR-0017, ADR-0010 T9 |
 | `app.User` | Profile: display name, locale, default privacy | FR-ACC-3/4 |
 | `app.Trip` | Planned and completed trips — the central entity | FR-LOG-1/3/6, FR-PLAN-1/3 |
 | `app.TripPeak` | Which peaks a trip involves; "bagged" is derived from it | FR-LOG-2/8 |
@@ -146,6 +148,17 @@ checked later.
 open (ADR-0012 §5.3). Whatever the answer, a peak somebody has logged has to survive it, so
 `ref.Peak` has `IsActive`/`RetiredAt` and the foreign key from `app.TripPeak` does not
 cascade.
+
+**No password is stored, and the schema refuses one.** Sign-in is a one-time code
+emailed to the user ([ADR-0017](https://github.com/rekfar/docs/blob/main/adr/0017-passwordless-email-sign-in.md)),
+so `auth.User.PasswordHash` is constrained to `NULL` rather than dropped: Identity's own
+store reads and writes that column, so keeping it and refusing every value is how the
+schema says "never" without a custom user store. `SecurityStamp` is `NOT NULL` for the
+opposite reason — passwordless makes it load-bearing. The sign-in code is derived from it,
+and rotating it is the only revocation a user has over a lost device, since there is no
+password to change. The lockout columns stay, now counting failed *code* attempts instead
+of password guesses. No token table is modelled: Identity's email token provider derives
+codes from the security stamp and stores nothing.
 
 **Auth and profile share a primary key.** `app.User.Id` *is* `auth.User.Id`. One identifier
 for a person across authentication and domain data, no join key to keep in step, and no way

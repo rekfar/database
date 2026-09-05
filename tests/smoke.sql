@@ -6,6 +6,8 @@
     in production:
 
         * ADR-0009's private/public separation cannot be violated by a bad write.
+        * A password cannot be stored, and an account cannot exist without a security
+          stamp (ADR-0017).
         * Geometry cannot be stored in the wrong coordinate system (NFR-INTEROP-2).
         * Deleting an account really does remove all of its data (FR-ACC-5, GDPR).
         * A reference row a user has logged against cannot be deleted by a refresh,
@@ -122,8 +124,9 @@ BEGIN TRY
 
     /* ---------- fixtures ---------- */
 
-    INSERT INTO auth.[User] (Id, UserName, NormalizedUserName, Email, NormalizedEmail, PasswordHash)
-    VALUES (@userId, N'smoke@example.test', N'SMOKE@EXAMPLE.TEST', N'smoke@example.test', N'SMOKE@EXAMPLE.TEST', N'not-a-real-hash');
+    INSERT INTO auth.[User] (Id, UserName, NormalizedUserName, Email, NormalizedEmail, SecurityStamp)
+    VALUES (@userId, N'smoke@example.test', N'SMOKE@EXAMPLE.TEST', N'smoke@example.test', N'SMOKE@EXAMPLE.TEST',
+            CONVERT(nvarchar(36), NEWID()));
 
     INSERT INTO app.[User] (Id, DisplayName)
     VALUES (@userId, N'Smoke Test');
@@ -156,6 +159,48 @@ BEGIN TRY
 
     SELECT @count = COUNT(*) FROM [ref].Peak WHERE [Name] = N'Galdhopiggen';
     IF @count <> 0 THROW 50013, '[Name] must stay accent-sensitive so Norwegian sorting is preserved.', 1;
+
+    /* ---------- ADR-0017: no password can be stored ---------- */
+
+    -- Rekfar has no password to store, so the column exists only because Identity's
+    -- default store reads and writes it. The constraint is what turns "we do not use
+    -- passwords" into something a bug, a manual fix or a second writer cannot undo.
+
+    SET @failed = 0;
+    BEGIN TRY
+        INSERT INTO auth.[User] (UserName, NormalizedUserName, Email, NormalizedEmail, SecurityStamp, PasswordHash)
+        VALUES (N'passord@example.test', N'PASSORD@EXAMPLE.TEST', N'passord@example.test', N'PASSORD@EXAMPLE.TEST',
+                CONVERT(nvarchar(36), NEWID()), N'not-a-real-hash');
+    END TRY
+    BEGIN CATCH
+        SET @failed = 1;
+    END CATCH
+    IF @failed = 0 THROW 50028, 'An account was created carrying a password hash (ADR-0017, NFR-SEC-2).', 1;
+
+    -- The likelier path: Identity setting a hash on an account that already exists.
+    SET @failed = 0;
+    BEGIN TRY
+        UPDATE auth.[User] SET PasswordHash = N'not-a-real-hash' WHERE Id = @userId;
+    END TRY
+    BEGIN CATCH
+        SET @failed = 1;
+    END CATCH
+    IF @failed = 0 THROW 50029, 'A password hash was written to an existing account (ADR-0017, NFR-SEC-2).', 1;
+
+    /* ---------- an account must have a security stamp ---------- */
+
+    -- Passwordless makes the stamp load-bearing: the sign-in code is derived from it, and
+    -- rotating it is the user's only lever over a lost device (accounts plan §7).
+
+    SET @failed = 0;
+    BEGIN TRY
+        INSERT INTO auth.[User] (UserName, NormalizedUserName, Email, NormalizedEmail, SecurityStamp)
+        VALUES (N'ustemplet@example.test', N'USTEMPLET@EXAMPLE.TEST', N'ustemplet@example.test', N'USTEMPLET@EXAMPLE.TEST', NULL);
+    END TRY
+    BEGIN CATCH
+        SET @failed = 1;
+    END CATCH
+    IF @failed = 0 THROW 50032, 'An account was created without a security stamp — it would have no revocation lever.', 1;
 
     /* ---------- ADR-0009: a diary note cannot be made public ---------- */
 

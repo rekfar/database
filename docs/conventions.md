@@ -133,6 +133,14 @@ Enforced here on purpose:
   nothing.
 - `CK_app_DiaryNote_Visibility` — a diary note is private, full stop
   ([ADR-0009](https://github.com/rekfar/docs/blob/main/adr/0009-private-and-public-logbook.md)).
+- `CK_auth_User_NoPassword` — Rekfar stores no user passwords
+  ([ADR-0017](https://github.com/rekfar/docs/blob/main/adr/0017-passwordless-email-sign-in.md),
+  NFR-SEC-2). The column is kept because Identity's default store writes to it, and
+  constrained to `NULL` so that it cannot hold anything. Not using a feature is a
+  convention; refusing it is an invariant.
+- `CK_auth_User_SecurityStamp` — an account has a security stamp. Under passwordless it
+  is both what the sign-in code is derived from and the user's only way to revoke a lost
+  device, so a NULL or blank stamp is not a valid account.
 - `CK_app_Trip_CompletedHasDate` — a logged trip without a date is not a logged trip.
 - `CK_ref_Peak_ElevationProvenance` — a derived elevation must carry the dataset and date
   it was sampled from, because its accuracy is a property of that sample (FR-REF-10).
@@ -167,6 +175,23 @@ The backend consumes this schema; it does not define it.
   not used, so the Identity entities need `ToTable("User", "auth")` and equivalents.
   `auth.User` is column-compatible with `IdentityUser` so the framework's own stores work
   unchanged.
+- **No password is ever written.** `auth.User.PasswordHash` is constrained to `NULL`
+  ([ADR-0017](https://github.com/rekfar/docs/blob/main/adr/0017-passwordless-email-sign-in.md)),
+  so any call that sets one — `UserManager.AddPasswordAsync`, `CreateAsync(user, password)`
+  — fails at the database rather than quietly succeeding. Create users with
+  `CreateAsync(user)` and sign them in with an emailed code.
+- **`SecurityStamp` is `NOT NULL`**, so a user must be created through Identity (or with a
+  stamp set by hand). Rotating it with `UpdateSecurityStampAsync` is what "log out
+  everywhere" does, and the only revocation the design offers.
+- **The lockout columns cap failed sign-in *code* attempts**, not password guesses, which
+  is ADR-0017 §3's attempt cap reusing Identity's own machinery: call `AccessFailedAsync`
+  on a wrong code and `ResetAccessFailedCountAsync` on a right one. They are the same
+  columns with a new meaning; nothing in the schema still assumes a password.
+- **There is no token table**, because Identity's email token provider is TOTP-style: it
+  derives the code from the security stamp and stores nothing. If the backend slice ends
+  up needing persisted tokens instead — a stored code hash, or `AspNetUserTokens` for any
+  other reason — that table is a change to *this* repository, not a migration in the
+  backend.
 - Identity entities this schema does not model (roles, claims, tokens, external logins) are
   not needed yet and should be ignored in the model rather than created. They get added
   here when a feature needs them.

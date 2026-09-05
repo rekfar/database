@@ -92,7 +92,7 @@ Four schemas, mirroring the split in the
 
 | Schema | Contents | Backup |
 | --- | --- | --- |
-| `auth` | Credentials and sign-in state | Yes |
+| `auth` | Accounts and sign-in state — no passwords ([ADR-0017](https://github.com/rekfar/docs/blob/main/adr/0017-passwordless-email-sign-in.md)) | Yes |
 | `app` | User data — profile, trips, diary notes | **Yes — the one hard line** |
 | `ref` | Kartverket reference data + provenance | No: rebuildable by re-import |
 | `ingest` | Ingestion run history | No |
@@ -102,9 +102,9 @@ Keeping them apart is what makes that last column actionable instead of aspirati
 ## Testing
 
 `tests/smoke.sql` asserts the invariants the schema is responsible for — that a diary note
-cannot be made public, that geometry cannot be stored in the wrong coordinate system, that
-deleting an account removes all of its data, that a peak a user has logged cannot be
-deleted by a data refresh. CI runs it against a freshly published database on every push
+cannot be made public, that a password cannot be stored, that geometry cannot be stored in
+the wrong coordinate system, that deleting an account removes all of its data, that a peak
+a user has logged cannot be deleted by a data refresh. CI runs it against a freshly published database on every push
 and pull request.
 
 It refuses to run against a database that contains accounts.

@@ -91,8 +91,7 @@ technical states:
 | `app.Trip.Type` | `fottur`, `topptur` |
 | `app.Trip.Difficulty` | `enkel`, `middels`, `krevende`, `ekspert` |
 | `ref.Area.Kind` | `kommune`, `region`, `fjellomrade` |
-| `app.Trip.Status` | `planned`, `completed` |
-| `app.DiaryNote.Visibility` | `private` |
+| `app.Trip.Status` | `wishlist`, `planned`, `completed` |
 | `app.*.Privacy` | `private`, `public` |
 | `ingest.Run.Status` | `running`, `succeeded`, `failed` |
 
@@ -131,8 +130,6 @@ Enforced here on purpose:
 - `CK_ref_Peak_LocationSrid` — canonical storage is WGS84 and nothing else
   (NFR-INTEROP-2). A wrong-SRID row is invisible until a spatial query silently returns
   nothing.
-- `CK_app_DiaryNote_Visibility` — a diary note is private, full stop
-  ([ADR-0009](https://github.com/rekfar/docs/blob/main/adr/0009-private-and-public-logbook.md)).
 - `CK_auth_User_NoPassword` — Rekfar stores no user passwords
   ([ADR-0017](https://github.com/rekfar/docs/blob/main/adr/0017-passwordless-email-sign-in.md),
   NFR-SEC-2). The column is kept because Identity's default store writes to it, and
@@ -142,13 +139,29 @@ Enforced here on purpose:
   is both what the sign-in code is derived from and the user's only way to revoke a lost
   device, so a NULL or blank stamp is not a valid account.
 - `CK_app_Trip_CompletedHasDate` — a logged trip without a date is not a logged trip.
+- `CK_app_Trip_WishlistHasNoDate` — its mirror: a wish with a date is a plan
+  ([ADR-0019](https://github.com/rekfar/docs/blob/main/adr/0019-trip-lifecycle-status.md)),
+  so the row has to say which one it is.
 - `CK_ref_Peak_ElevationProvenance` — a derived elevation must carry the dataset and date
   it was sampled from, because its accuracy is a property of that sample (FR-REF-10).
 - `CK_ref_Peak_Retired` — `IsActive` and `RetiredAt` must agree.
 
+Deliberately *not* enforced here:
+
+- **"A diary note is private."** This used to be `CK_app_DiaryNote_Visibility`, on a table
+  that no longer exists. The diary note is now the column `app.Trip.Notes`
+  ([ADR-0020](https://github.com/rekfar/docs/blob/main/adr/0020-diary-note-is-trip-notes.md)),
+  and a column has no visibility to constrain. The invariant has moved rather than gone
+  ([ADR-0009](https://github.com/rekfar/docs/blob/main/adr/0009-private-and-public-logbook.md)
+  still holds): no operation publishes `Trip.Notes`, `Trip.Privacy` does not cover it, and
+  a future shared trip is shared without it. That is a rule for every reader of the
+  column, which the schema cannot express.
+- **"At most one wish per user and peak."** It spans `app.Trip` and `app.TripPeak`, which a
+  filtered unique index cannot do. The API owns it (rekfar/backend#14).
+
 ### Cascades
 
-`auth.User` → `app.User` → `Trip` → (`TripPeak`, `DiaryNote`) all cascade on delete, which
+`auth.User` → `app.User` → `Trip` → `TripPeak` all cascade on delete, which
 makes "delete my account" (FR-ACC-5) one statement that cannot leave orphans behind.
 
 Foreign keys **from user data into reference data do not cascade** — `FK_app_TripPeak_Peak`
@@ -213,3 +226,10 @@ The backend consumes this schema; it does not define it.
 
 A change that needs data to be moved or backfilled needs a pre-deployment script, and a
 `BlockOnPossibleDataLoss` failure is a signal to write one — not to turn the setting off.
+
+**Removing an object takes a pre-deployment script too.** `DropObjectsNotInSource` is off,
+so deleting a `.sql` file takes the object out of the model and out of every database
+published from empty, but leaves it behind in one that already has it. Add a
+`Scripts/PreDeployment/Drop.<Object>.sql`, include it from `PreDeployment.sql`, and make
+it idempotent and unwilling to discard data: it drops the object if it exists, and fails
+the deploy if the object still holds rows. `Drop.DiaryNote.sql` is the pattern.

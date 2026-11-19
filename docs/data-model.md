@@ -12,8 +12,7 @@ seed needs.
 erDiagram
     AUTH_USER   ||--|| APP_USER      : "is"
     APP_USER    ||--o{ TRIP          : logs
-    TRIP        ||--o{ DIARY_NOTE    : "has (private)"
-    TRIP        }o--o{ PEAK          : "summits (0..n)"
+    TRIP        }o--o{ PEAK          : "targets or summits (0..n)"
     PEAK        }o--|| SOURCE_DATASET : "sourced from"
     PEAK        }o--o| PEAK_RULE     : "admitted by"
     PEAK        }o--o{ AREA          : "located in"
@@ -39,18 +38,14 @@ erDiagram
     }
     TRIP {
         uniqueidentifier Id PK
-        varchar Status "planned | completed"
+        varchar Status "wishlist | planned | completed"
         varchar Type "fottur | topptur"
-        date Date "required when completed"
+        date Date "none on a wish, required when completed"
         int AscentMeters
         varchar Difficulty "enkel|middels|krevende|ekspert"
         nvarchar Conditions "føre"
+        nvarchar Notes "the diary note — never published"
         varchar Privacy "private"
-    }
-    DIARY_NOTE {
-        uniqueidentifier Id PK
-        nvarchar Text
-        varchar Visibility "private, always"
     }
     PEAK {
         bigint Id PK
@@ -115,9 +110,8 @@ erDiagram
 | --- | --- | --- |
 | `auth.User` | The account — Identity-compatible, and holding no password | FR-ACC-1/2, ADR-0017, ADR-0010 T9 |
 | `app.User` | Profile: display name, locale, default privacy | FR-ACC-3/4 |
-| `app.Trip` | Planned and completed trips — the central entity | FR-LOG-1/3/6, FR-PLAN-1/3 |
-| `app.TripPeak` | Which peaks a trip involves; "bagged" is derived from it | FR-LOG-2/8 |
-| `app.DiaryNote` | Private diary notes on a trip | FR-BOOK-1/2/5, ADR-0009 |
+| `app.Trip` | Wishes, plans and logged trips — the central entity. `Notes` is the private diary note | FR-LOG-1/3/4/6, FR-PLAN-1/3/4/5, FR-BOOK-1/2, ADR-0019, ADR-0020 |
+| `app.TripPeak` | Which peaks a trip targets or reached; "bagged", "planned" and "on the wishlist" are derived from it | FR-LOG-2/8, FR-PLAN-4 |
 | `ref.Peak` | The peak catalogue, from SSR + Høydedata | FR-PEAK-1/2, FR-REF-1/5/6/10 |
 | `ref.Area`, `ref.PeakArea` | Kommune / region / fjellområde, resolved at ingestion | FR-PEAK-3, FR-STAT-3 |
 | `ref.SourceDataset` | Provenance, licence and attribution per dataset | FR-REF-3, NFR-LEGAL-2 |
@@ -128,15 +122,36 @@ erDiagram
 
 ## Decisions worth knowing
 
-**A planned trip and a completed trip are one table.** Status carries the difference, so
-converting a plan into a log (FR-PLAN-3) is an update, not a copy between tables. `Date` is
-the target date while planned and the actual date once completed; a check constraint
-requires it in the completed state only.
+**A wish, a plan and a logged trip are one table**
+([ADR-0019](https://github.com/rekfar/docs/blob/main/adr/0019-trip-lifecycle-status.md)).
+`Status` is `wishlist`, `planned` or `completed` and carries the difference, so moving a
+wish into planning (FR-PLAN-5) and a plan into the log (FR-PLAN-3) are each an update of
+one row, not a copy between tables. There is no `WishlistItem` table and there will not be
+one. `Date` follows the state, and the two ends are check constraints:
 
-**"Bagged" is derived, not stored.** A peak is bagged if the user has a completed trip
-linked to it. Storing a flag would put per-user state inside reference data that gets
-rebuilt by re-import — the flag would survive as the one thing in `ref` that cannot be
-regenerated.
+| Status | `Date` | Enforced by |
+| --- | --- | --- |
+| `wishlist` | absent — a wish with a date is a plan | `CK_app_Trip_WishlistHasNoDate` |
+| `planned` | the target date, optional | — |
+| `completed` | the actual date, required | `CK_app_Trip_CompletedHasDate` |
+
+**"At most one wish per user and peak" is not a constraint in this schema.** The rule
+spans `Trip` (the user and the status) and `TripPeak` (the peak), and a filtered unique
+index cannot reach across two tables. The API owns it (rekfar/backend#14) — so its absence
+here is deliberate, not an omission to go looking for.
+
+**The diary note is `Trip.Notes`**
+([ADR-0020](https://github.com/rekfar/docs/blob/main/adr/0020-diary-note-is-trip-notes.md)).
+The private diary note (dagboknotat, FR-BOOK-1/2) and a trip's free-text notes (FR-LOG-4)
+are the same thing, so there is no diary-note entity and `app.DiaryNote` is gone. `Notes`
+is never published, whatever `Privacy` says: `Privacy` describes the trip, and a trip that
+is one day shared is shared without its notes.
+
+**"Bagged" is derived, not stored — and so are "planned" and "on the wishlist".** A peak
+is bagged if the user has a completed trip linked to it, planned if a planned trip targets
+it, and on the wishlist if a wish does: all three are `TripPeak` joined to `Trip.Status`.
+Storing a flag would put per-user state inside reference data that gets rebuilt by
+re-import — the flag would survive as the one thing in `ref` that cannot be regenerated.
 
 **Elevation is derived and carries its provenance.** SSR has no height, so elevation is
 sampled from Kartverket's DTM and travels with the dataset and date it was sampled from
@@ -216,7 +231,6 @@ schema for months.
 | `Track` (spor), `Route` (rute) | 2 | GPX import (FR-DATA-1) |
 | `Photo` | 2 | Blob reference plus metadata; binaries in object storage |
 | `GuestbookEntry` | 2 | Public, per place, moderatable (ADR-0009) |
-| `WishlistItem` | 2 | FR-PLAN-4/5 |
 | `ConnectedService`, `Activity` | 2 | Strava, then Garmin (ADR-0008) |
 | `Friendship`, trip sharing | 3 | FR-SOCIAL, FR-SHARE. Link sharing will be a token table, not a privacy level |
 

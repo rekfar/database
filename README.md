@@ -71,6 +71,7 @@ behaves the same.
 src/Rekfar.Database/        The schema — one file per object
   Schemas/                  auth, app, ref, ingest
   Tables/<schema>/
+  Scripts/PreDeployment/    Explicit, guarded drops of objects removed from the model
   Scripts/PostDeployment/   Idempotent seed data (code lists, provenance, the peak rule)
   Programmability/<schema>/ Stored procedures — currently the peak merge
 src/Rekfar.Ingest.Peaks/    The Kartverket peak import (ADR-0015)
@@ -93,7 +94,7 @@ Four schemas, mirroring the split in the
 | Schema | Contents | Backup |
 | --- | --- | --- |
 | `auth` | Accounts and sign-in state — no passwords ([ADR-0017](https://github.com/rekfar/docs/blob/main/adr/0017-passwordless-email-sign-in.md)) | Yes |
-| `app` | User data — profile, trips, diary notes | **Yes — the one hard line** |
+| `app` | User data — profile, trips (wishes, plans and logs, with their private diary notes) | **Yes — the one hard line** |
 | `ref` | Kartverket reference data + provenance | No: rebuildable by re-import |
 | `ingest` | Ingestion run history | No |
 
@@ -101,8 +102,8 @@ Keeping them apart is what makes that last column actionable instead of aspirati
 
 ## Testing
 
-`tests/smoke.sql` asserts the invariants the schema is responsible for — that a diary note
-cannot be made public, that a password cannot be stored, that geometry cannot be stored in
+`tests/smoke.sql` asserts the invariants the schema is responsible for — that a wish has
+no date and a logged trip has one, that a password cannot be stored, that geometry cannot be stored in
 the wrong coordinate system, that deleting an account removes all of its data, that a peak
 a user has logged cannot be deleted by a data refresh. CI runs it against a freshly published database on every push
 and pull request.
@@ -117,8 +118,10 @@ if all of that passed, it publishes to Azure SQL using the artifact the tests ra
 
 Two settings in `publish/azure.publish.xml` are deliberate and should not be relaxed
 casually: `BlockOnPossibleDataLoss` stops any deploy that would discard data, and
-`DropObjectsNotInSource` is off, so removing an object from the project produces a line in
-the deploy report to review rather than a `DROP` on the next push.
+`DropObjectsNotInSource` is off, so removing an object from the project never becomes a
+`DROP` on the next push by itself. A removal is written out as a pre-deployment script that
+refuses to drop anything still holding rows — see
+[conventions — Changing the schema](docs/conventions.md#changing-the-schema).
 
 `.github/workflows/ingest-peaks.yml` is separate, and runs on a clock rather than on a
 commit: it refreshes the Kartverket peak catalogue monthly, as its own least-privileged

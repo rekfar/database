@@ -30,8 +30,11 @@
 
   <ItemGroup>
     <!-- Deployment scripts are not schema objects, so they must not be compiled into
-         the model. Exactly one PostDeploy file is allowed; it :r-includes the rest. -->
+         the model. Exactly one PreDeploy and one PostDeploy file are allowed; each
+         :r-includes the rest. -->
     <Build Remove="Scripts/**/*.sql" />
+    <PreDeploy Include="Scripts/PreDeployment/PreDeployment.sql" />
+    <None Include="Scripts/PreDeployment/Drop.*.sql" />
     <PostDeploy Include="Scripts/PostDeployment/PostDeployment.sql" />
     <None Include="Scripts/PostDeployment/Seed.*.sql" />
   </ItemGroup>

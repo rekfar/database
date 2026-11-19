@@ -1,9 +1,14 @@
 ﻿-- Which peaks a trip involves: 0..n, because a traverse can bag several (FR-LOG-2).
--- For a planned trip these are the target peaks (FR-PLAN-1).
+-- For a wish or a plan these are the target peaks (FR-PLAN-1, FR-PLAN-4); only rows
+-- joined to a *completed* trip mean the peak was reached.
 --
--- "Bagged (toppet)" (FR-LOG-8) is derived from this table joined to completed trips —
--- deliberately not stored as a flag on the peak, which would be per-user state sitting
--- in rebuildable reference data.
+-- "Bagged (toppet)" (FR-LOG-8) is therefore derived from this table joined to completed
+-- trips, and "on the wishlist" and "planned" from the same join on the other two values
+-- of Trip.[Status] (ADR-0019). None of the three is stored as a flag on the peak, which
+-- would be per-user state sitting in rebuildable reference data.
+--
+-- "At most one wish per user and peak" is not enforced here: it spans Trip and TripPeak,
+-- which a filtered unique index cannot express. The API owns that rule.
 CREATE TABLE app.TripPeak
 (
     TripId      uniqueidentifier    NOT NULL,

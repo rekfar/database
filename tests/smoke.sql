@@ -5,7 +5,10 @@
     schema itself is supposed to guarantee, the ones that would otherwise be discovered
     in production:
 
-        * ADR-0009's private/public separation cannot be violated by a bad write.
+        * A trip is a wish, a plan or a log, and each state's rule about the date
+          holds (ADR-0019).
+        * The diary note is Trip.Notes, and there is no table for it to leak from
+          (ADR-0020).
         * A password cannot be stored, and an account cannot exist without a security
           stamp (ADR-0017).
         * Geometry cannot be stored in the wrong coordinate system (NFR-INTEROP-2).
@@ -44,6 +47,7 @@ DECLARE @collation nvarchar(128);
 DECLARE @message nvarchar(2048);
 DECLARE @userId uniqueidentifier = '11111111-1111-1111-1111-111111111111';
 DECLARE @tripId uniqueidentifier = '22222222-2222-2222-2222-222222222222';
+DECLARE @wishId uniqueidentifier = '33333333-3333-3333-3333-333333333333';
 DECLARE @peakId bigint;
 DECLARE @runId bigint;
 DECLARE @mergeRunId bigint;
@@ -138,11 +142,12 @@ BEGIN TRY
 
     SET @peakId = SCOPE_IDENTITY();
 
-    INSERT INTO app.Trip (Id, UserId, [Status], [Type], [Date], AscentMeters, Difficulty)
-    VALUES (@tripId, @userId, 'completed', 'topptur', '2026-07-14', 1300, 'middels');
+    -- The diary note (dagboknotat) is written as Trip.Notes: it is a column of the trip,
+    -- not an entity of its own (ADR-0020).
+    INSERT INTO app.Trip (Id, UserId, [Status], [Type], [Date], AscentMeters, Difficulty, Notes)
+    VALUES (@tripId, @userId, 'completed', 'topptur', '2026-07-14', 1300, 'middels', N'Fint vær, kaldt på toppen.');
 
     INSERT INTO app.TripPeak (TripId, PeakId) VALUES (@tripId, @peakId);
-    INSERT INTO app.DiaryNote (TripId, [Text]) VALUES (@tripId, N'Fint vær, kaldt på toppen.');
 
     /* ---------- defaults ---------- */
 
@@ -202,16 +207,16 @@ BEGIN TRY
     END CATCH
     IF @failed = 0 THROW 50032, 'An account was created without a security stamp — it would have no revocation lever.', 1;
 
-    /* ---------- ADR-0009: a diary note cannot be made public ---------- */
+    /* ---------- ADR-0020: the diary note is Trip.Notes, and nothing else ---------- */
 
-    SET @failed = 0;
-    BEGIN TRY
-        INSERT INTO app.DiaryNote (TripId, [Text], Visibility) VALUES (@tripId, N'should not be allowed', 'public');
-    END TRY
-    BEGIN CATCH
-        SET @failed = 1;
-    END CATCH
-    IF @failed = 0 THROW 50020, 'A diary note was accepted as public — ADR-0009 separation is not enforced.', 1;
+    SELECT @count = COUNT(*) FROM app.Trip WHERE Id = @tripId AND Notes = N'Fint vær, kaldt på toppen.';
+    IF @count <> 1 THROW 50020, 'The diary note was not stored in Trip.Notes.', 1;
+
+    -- The table is retired, and a publish does not drop what is missing from the model
+    -- (DropObjectsNotInSource is off) — the pre-deployment script does. If this fires on
+    -- an upgraded database, that script did not run.
+    IF OBJECT_ID(N'app.DiaryNote', N'U') IS NOT NULL
+        THROW 50033, 'app.DiaryNote still exists — the diary note is Trip.Notes (ADR-0020).', 1;
 
     /* ---------- NFR-INTEROP-2: canonical storage is WGS84 only ---------- */
 
@@ -252,6 +257,47 @@ BEGIN TRY
 
     INSERT INTO app.Trip (UserId, [Status], [Type]) VALUES (@userId, 'planned', 'topptur');
 
+    /* ---------- a wish is a trip with a peak and no date (ADR-0019, FR-PLAN-4) ---------- */
+
+    INSERT INTO app.Trip (Id, UserId, [Status], [Type]) VALUES (@wishId, @userId, 'wishlist', 'topptur');
+    INSERT INTO app.TripPeak (TripId, PeakId) VALUES (@wishId, @peakId);
+
+    -- A wish with a date is a plan; the row has to say which it is.
+    SET @failed = 0;
+    BEGIN TRY
+        INSERT INTO app.Trip (UserId, [Status], [Type], [Date]) VALUES (@userId, 'wishlist', 'topptur', '2027-07-14');
+    END TRY
+    BEGIN CATCH
+        SET @failed = 1;
+    END CATCH
+    IF @failed = 0 THROW 50034, 'A wishlist trip was accepted with a date.', 1;
+
+    -- The same rule on the path a bug would take: dating a wish without promoting it.
+    SET @failed = 0;
+    BEGIN TRY
+        UPDATE app.Trip SET [Date] = '2027-07-14' WHERE Id = @wishId;
+    END TRY
+    BEGIN CATCH
+        SET @failed = 1;
+    END CATCH
+    IF @failed = 0 THROW 50035, 'A date was set on a trip that is still on the wishlist.', 1;
+
+    -- Wish to plan to log is a change of status on one row (FR-PLAN-5, FR-PLAN-3).
+    UPDATE app.Trip SET [Status] = 'planned', [Date] = '2027-07-14' WHERE Id = @wishId;
+    UPDATE app.Trip SET [Status] = 'completed' WHERE Id = @wishId;
+    UPDATE app.Trip SET [Status] = 'wishlist', [Date] = NULL WHERE Id = @wishId;
+
+    /* ---------- the three statuses are the only ones ---------- */
+
+    SET @failed = 0;
+    BEGIN TRY
+        INSERT INTO app.Trip (UserId, [Status], [Type]) VALUES (@userId, 'dreamt', 'topptur');
+    END TRY
+    BEGIN CATCH
+        SET @failed = 1;
+    END CATCH
+    IF @failed = 0 THROW 50036, 'A trip status outside wishlist, planned and completed was accepted.', 1;
+
     /* ---------- glossary code values are the only ones allowed ---------- */
 
     SET @failed = 0;
@@ -282,7 +328,7 @@ BEGIN TRY
     UPDATE [ref].Peak SET IsActive = 0, RetiredAt = SYSUTCDATETIME() WHERE Id = @peakId;
 
     SELECT @count = COUNT(*) FROM app.TripPeak WHERE PeakId = @peakId;
-    IF @count <> 1 THROW 50026, 'Retiring a peak lost the trip that logged it.', 1;
+    IF @count <> 2 THROW 50026, 'Retiring a peak lost the trip that logged it or the wish that targets it.', 1;
 
     SET @failed = 0;
     BEGIN TRY
@@ -432,7 +478,7 @@ BEGIN TRY
     IF @count <> 1 THROW 50057, 'A peak absent from the refresh was not retired.', 1;
 
     SELECT @count = COUNT(*) FROM app.TripPeak WHERE PeakId = @peakId;
-    IF @count <> 1 THROW 50058, 'Retiring a peak destroyed the trip that logged it.', 1;
+    IF @count <> 2 THROW 50058, 'Retiring a peak destroyed the trip that logged it or the wish that targets it.', 1;
 
     /* ---------- merging the same snapshot again changes nothing ---------- */
 
@@ -449,8 +495,7 @@ BEGIN TRY
 
     SELECT @count = (SELECT COUNT(*) FROM app.[User] WHERE Id = @userId)
                   + (SELECT COUNT(*) FROM app.Trip WHERE UserId = @userId)
-                  + (SELECT COUNT(*) FROM app.TripPeak WHERE TripId = @tripId)
-                  + (SELECT COUNT(*) FROM app.DiaryNote WHERE TripId = @tripId);
+                  + (SELECT COUNT(*) FROM app.TripPeak WHERE TripId IN (@tripId, @wishId));
     IF @count <> 0 THROW 50030, 'Deleting the account left user data behind (FR-ACC-5).', 1;
 
     /* Reference data must be untouched by an account deletion. */
